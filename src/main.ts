@@ -1,8 +1,18 @@
+// ฟอนต์ไทยฝังมากับแอป (ไม่เรียก Google Fonts → ไม่มีคำขอไปบุคคลที่สาม)
+import '@fontsource/ibm-plex-sans-thai/thai-200.css';
+import '@fontsource/ibm-plex-sans-thai/thai-400.css';
+import '@fontsource/ibm-plex-sans-thai/thai-500.css';
+import '@fontsource/ibm-plex-sans-thai/thai-600.css';
+import '@fontsource/ibm-plex-sans-thai/thai-700.css';
+import '@fontsource/ibm-plex-sans-thai/latin-200.css';
+import '@fontsource/ibm-plex-sans-thai/latin-400.css';
+import '@fontsource/ibm-plex-sans-thai/latin-600.css';
 import './styles.css';
 import { PROVINCES } from './data/seed';
 import {
   DAYS_IN_MONTH,
   MONTH_NAMES_TH,
+  MONTH_SHORT_TH,
   SWEEP_DAY_FRACTIONS,
   SWEEP_SIZES,
   buildContext,
@@ -20,10 +30,11 @@ import {
 } from './engine';
 import { sweep, useSharedDevice } from './gpu/gpu-sweep';
 import { SolarScene, panelCapacity, usableRoofArea } from './scene/scene';
+import { MONTH_WEATHER, WEATHER, WEATHER_IDS, type WeatherId } from './scene/weather-model';
 import { blankOffer, editorHtml, readEditor } from './ui/editor';
-import { hhmm, num, thb } from './ui/format';
-import { defaultState, loadState, resetOffers, saveState, shareUrl, type AppState, type TabId } from './ui/state';
-import { homeDynamic, monthOptions, renderHome, renderInstallers, renderLearn, renderResults, renderSize, type Model } from './ui/views';
+import { esc, hhmm, num, thb } from './ui/format';
+import { defaultState, loadState, resetOffers, shareUrl, type AppState, type TabId } from './ui/state';
+import { homeDynamic, renderHome, renderInstallers, renderLearn, renderResults, renderSize, type Model } from './ui/views';
 
 const state: AppState = loadState();
 let model: Model;
@@ -99,7 +110,6 @@ function compute(): void {
     panelCount,
     capacity: panelCapacity(s.house).capacity,
   };
-  saveState(s);
 }
 
 /* ------------------------------------------------------------ GPU sweep (debounced) */
@@ -198,11 +208,15 @@ function renderSummaryBar(): void {
   $('#sum-payback').textContent = e?.payback != null ? `${num(e.payback, 1)} ปี` : 'ยังคำนวณไม่ได้';
   $('#sum-capex').textContent = e?.capex.capex != null ? thb(e.capex.capex) : 'VAT?';
   const o = e?.offer;
-  const name = e?.installer?.name ?? '';
   const over = model.panelCount > model.capacity;
-  $('#hud-offer').innerHTML = o
-    ? `<b>${name}</b> ${o.packageName}<br><small>${model.panelCount} แผง • ${num(o.solarDcKwp, 2)} kWp DC • อินเวอร์เตอร์ ${num(o.inverterAcKw, 1)} kW</small>${over ? `<div class="hud-warn">หลังคาฝั่งนี้วางได้ ${model.capacity} แผง — ต้องใช้ฝั่งอื่น/ลดขนาด</div>` : ''}`
+  $('#hero-pkg').innerHTML = o
+    ? `<span>🔆 ${esc(e?.installer?.name ?? '')} ${esc(o.packageName)}</span><span>• ${model.panelCount} แผง ${num(o.solarDcKwp, 2)} kWp</span>${
+        e?.payback != null ? `<span>• คืนทุน ${num(e.payback, 1)} ปี</span>` : ''
+      }${over ? `<span class="warn">หลังคาฝั่งนี้วางได้ ${model.capacity} แผง — ต้องใช้ฝั่งอื่นหรือลดขนาด</span>` : ''}`
     : '';
+  renderMonths();
+  const ps = document.querySelector<HTMLSelectElement>('#prov-select');
+  if (ps && ps.value !== state.scenario.province) ps.value = state.scenario.province;
 }
 
 function updateScene(): void {
@@ -210,22 +224,46 @@ function updateScene(): void {
   const m = state.view.month;
   const h = Math.min(23, Math.floor(state.view.hour));
   const days = DAYS_IN_MONTH[m]!;
+  const wx = WEATHER[state.view.weather];
   const hm = e?.sim?.hourly[m];
-  const pv = hm ? hm.pv[h]! / days : 0;
+  // ภาพสด: วันเฉลี่ยของเดือน × ตัวคูณสภาพอากาศ (ผลรายปียังใช้ค่าเฉลี่ยตาม engine)
+  const pv = hm ? (hm.pv[h]! / days) * wx.pv : 0;
   const load = (model.ctx.load[m]![h] ?? 0) / days;
   const self = Math.min(pv, load);
   const flows = { pv, self, import: Math.max(0, load - self), export: Math.max(0, pv - self) };
   const peak = hm ? Math.max(...hm.pv) / days : 1;
   const lat = PROVINCES.find((p) => p.name === state.scenario.province)?.lat ?? 13.86;
-  scene?.update({ house: state.house, panelCount: model.panelCount, lat, month: m, hour: state.view.hour, flows, flowScale: Math.max(peak, 1) });
+  scene?.update({ house: state.house, panelCount: model.panelCount, lat, month: m, hour: state.view.hour, flows, flowScale: Math.max(peak, 1), weather: state.view.weather });
+
+  const night = state.view.hour < 6 || state.view.hour >= 18.5;
+  document.body.classList.toggle('night', night);
   $('#hud-time').textContent = `${hhmm(state.view.hour)} น. • ${MONTH_NAMES_TH[m]}`;
-  $('#flow-pv').textContent = `${num(flows.pv, 2)} kW`;
+  $('#hero-loc').textContent = `${state.scenario.province} • ${hhmm(state.view.hour)} น. • ${MONTH_NAMES_TH[m]}`;
+  $('#hero-kw').textContent = num(pv, 2);
+  $('#hero-cond').textContent = night ? '🌙 กลางคืน • แผงพัก' : `${wx.icon} ${wx.label}`;
+  let desc: string;
+  if (pv < 0.01) desc = `ไม่มีแดด บ้านใช้ไฟจากการไฟฟ้า ${num(load, 2)} kW — อยากใช้ไฟจากแดดตอนกลางคืนต้องมีแบตเตอรี่`;
+  else if (flows.export > 0.005) desc = `${wx.desc} ผลิตเกินที่บ้านใช้ ${num(flows.export, 2)} kW (ไฟส่วนเกินคิดรายได้ 0 บาท)`;
+  else desc = `${wx.desc} แผงจ่ายไฟให้บ้าน ${num(load > 0 ? (self / load) * 100 : 0)}% ของที่ใช้อยู่`;
+  $('#hero-desc').textContent = desc;
   $('#flow-load').textContent = `${num(load, 2)} kW`;
   $('#flow-self').textContent = `${num(flows.self, 2)} kW`;
-  $('#flow-grid').textContent = flows.import > 0.005 ? `ซื้อ ${num(flows.import, 2)} kW` : flows.export > 0.005 ? `เหลือ ${num(flows.export, 2)} kW` : '0 kW';
-  $('#flow-grid-row').dataset.dir = flows.import > 0.005 ? 'import' : 'export';
+  const exporting = flows.import <= 0.005 && flows.export > 0.005;
+  $('#flow-grid').textContent = `${num(exporting ? flows.export : flows.import, 2)} kW`;
+  $('#flow-grid-label').textContent = exporting ? 'ไฟเหลือ (ไหลออก)' : 'ซื้อจากการไฟฟ้า';
+  $('#flow-grid-row').dataset.dir = exporting ? 'export' : 'import';
+  document.querySelectorAll<HTMLButtonElement>('.wx').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.wx === state.view.weather)));
   const hourEl = $<HTMLInputElement>('#hour');
   if (document.activeElement !== hourEl) hourEl.value = String(state.view.hour);
+}
+
+/** แถบ 12 เดือน (แบบพยากรณ์อากาศ): ผลิตไฟรายเดือนของแพ็กเกจที่เลือก */
+function renderMonths(): void {
+  const sim = model.sel?.sim;
+  $('#months').innerHTML = MONTH_SHORT_TH.map((n, i) => {
+    const kwh = sim ? sim.months[i]!.pvKwh : 0;
+    return `<button type="button" class="mo" role="tab" data-month="${i}" aria-selected="${i === state.view.month}" title="${MONTH_NAMES_TH[i]}: ผลิต ~${num(kwh)} kWh, ประหยัด ~${sim ? num(sim.months[i]!.grossSaving) : 0} บาท"><span class="n">${n}</span><span class="i">${WEATHER[MONTH_WEATHER[i]!].icon}</span><strong>${sim ? num(kwh) : '–'}</strong><small>kWh</small></button>`;
+  }).join('');
 }
 
 function refresh(opts: { tab?: boolean } = {}): void {
@@ -282,12 +320,12 @@ panel.addEventListener('click', (ev) => {
     case 'view-offer':
       state.selected = btn.dataset.id!;
       refresh({ tab: true });
-      document.querySelector('.viewport')?.scrollIntoView({ behavior: 'smooth' });
+      document.querySelector('.stage')?.scrollIntoView({ behavior: 'smooth' });
       break;
     case 'custom-size':
       state.selected = `CUSTOM:${btn.dataset.kwp}`;
       refresh({ tab: true });
-      document.querySelector('.viewport')?.scrollIntoView({ behavior: 'smooth' });
+      document.querySelector('.stage')?.scrollIntoView({ behavior: 'smooth' });
       break;
     case 'edit-offer':
       openEditor(state.offers.find((o) => o.id === btn.dataset.id) ?? null);
@@ -336,13 +374,50 @@ hourInput.addEventListener('input', () => {
   updateScene();
   if (state.tab === 'results') renderTab();
 });
-const monthSel = $<HTMLSelectElement>('#month');
-monthSel.innerHTML = monthOptions(state.view.month);
-monthSel.addEventListener('change', () => {
-  state.view.month = Number(monthSel.value);
+$('#months').addEventListener('click', (ev) => {
+  const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-month]');
+  if (!b) return;
+  state.view.month = Number(b.dataset.month);
+  state.view.weather = MONTH_WEATHER[state.view.month]!;
+  renderMonths();
   updateScene();
   if (state.tab === 'results' || state.tab === 'home') renderTab();
+  toast(`${MONTH_NAMES_TH[state.view.month]} • อากาศโดยทั่วไป: ${WEATHER[state.view.weather].icon} ${WEATHER[state.view.weather].label}`);
 });
+
+const chips = $('#weather-chips');
+chips.innerHTML = WEATHER_IDS.map(
+  (id) =>
+    `<button type="button" class="wx" role="radio" data-wx="${id}" aria-checked="false" aria-label="${WEATHER[id].label}"><span class="em">${WEATHER[id].icon}</span><span class="lb">${WEATHER[id].label.replace('พายุฝนฟ้าคะนอง', 'พายุ').replace('มีเมฆบางส่วน', 'เมฆบางส่วน')}</span></button>`,
+).join('');
+chips.addEventListener('click', (ev) => {
+  const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-wx]');
+  if (!b) return;
+  state.view.weather = b.dataset.wx as WeatherId;
+  updateScene();
+  const w = WEATHER[state.view.weather];
+  toast(`${w.icon} ${w.label} — กำลังผลิตขณะนี้ ×${num(w.pv, 2)} ของวันเฉลี่ย (ผลรายปีไม่เปลี่ยน)`);
+});
+
+const provSel = $<HTMLSelectElement>('#prov-select');
+provSel.innerHTML = PROVINCES.map((p) => `<option value="${p.name}">${p.name}</option>`).join('');
+provSel.value = state.scenario.province;
+provSel.addEventListener('change', () => {
+  state.scenario.province = provSel.value;
+  refresh({ tab: state.tab === 'home' ? true : undefined });
+});
+
+const autoBtn = $<HTMLButtonElement>('#auto-btn');
+autoBtn.addEventListener('click', () => {
+  state.view.autoRotate = !state.view.autoRotate;
+  scene?.setAutoRotate(state.view.autoRotate);
+  autoBtn.setAttribute('aria-pressed', String(state.view.autoRotate));
+  $('#auto-label').textContent = state.view.autoRotate ? 'หยุดหมุน' : 'หมุนอัตโนมัติ';
+});
+$('#zoom-in').addEventListener('click', () => scene?.zoom(0.85));
+$('#zoom-out').addEventListener('click', () => scene?.zoom(1.18));
+$('#reset-view').addEventListener('click', () => scene?.resetView());
+
 const playBtn = $<HTMLButtonElement>('#play');
 let last = 0;
 function playLoop(t: number): void {
@@ -378,7 +453,6 @@ function openEditor(existing: Offer | null): void {
   form.querySelector('[data-role="cancel"]')!.addEventListener('click', () => dialog.close());
   form.querySelector('[data-role="delete"]')?.addEventListener('click', () => {
     if (!existing || !confirm(`ลบ ${existing.id}?`)) return;
-    archive(existing);
     state.offers = state.offers.filter((o) => o.id !== existing.id);
     dialog.close();
     refresh({ tab: true });
@@ -388,7 +462,6 @@ function openEditor(existing: Offer | null): void {
     const { offer, newInstaller } = readEditor(form, base);
     if (newInstaller) state.installers.push(newInstaller);
     if (existing) {
-      archive(existing);
       state.offers = state.offers.map((o) => (o.id === existing.id ? offer : o));
     } else {
       if (state.offers.some((o) => o.id === offer.id)) offer.id += `-${state.offers.length}`;
@@ -399,18 +472,6 @@ function openEditor(existing: Offer | null): void {
     refresh({ tab: true });
   });
   dialog.showModal();
-}
-
-/** เก็บราคาเดิมไว้ ไม่ overwrite จนประวัติหาย */
-function archive(o: Offer): void {
-  try {
-    const key = 'solar3d:offer-history';
-    const hist = JSON.parse(localStorage.getItem(key) ?? '[]') as unknown[];
-    hist.push({ ...o, archivedAt: new Date().toISOString() });
-    localStorage.setItem(key, JSON.stringify(hist.slice(-200)));
-  } catch {
-    /* ignore */
-  }
 }
 
 /* ------------------------------------------------------------ export / share */
@@ -483,9 +544,12 @@ SolarScene.create($('#viewport'))
   .then((s) => {
     scene = s;
     if (s.gpuDevice) useSharedDevice(s.gpuDevice);
+    const inset = () => s.setRightInset(window.innerWidth > 900 ? $('#studio').getBoundingClientRect().width + 24 : 0);
+    inset();
+    window.addEventListener('resize', inset);
     $('#renderer').textContent = s.backendName === 'WebGPU' ? 'WebGPU + WGSL' : 'WebGL2';
-    $('#renderer').title = s.backendName === 'WebGPU' ? 'เรนเดอร์ด้วย WebGPU, shader แผงโซลาร์และการคำนวณขนาดเขียนด้วย WGSL' : 'เบราว์เซอร์นี้ไม่รองรับ WebGPU จึงใช้ WebGL2 แทน (ผลคำนวณเหมือนกัน)';
-    $('#renderer').classList.add(s.backendName === 'WebGPU' ? 'good' : 'mute');
+    $('#renderer-pill').classList.toggle('fallback', s.backendName !== 'WebGPU');
+    $('#renderer-pill').title = s.backendName === 'WebGPU' ? 'เรนเดอร์ด้วย WebGPU, shader แผงโซลาร์และการคำนวณขนาดเขียนด้วย WGSL' : 'เบราว์เซอร์นี้ไม่รองรับ WebGPU จึงใช้ WebGL2 แทน (ผลคำนวณเหมือนกัน)';
     $('#viewport').classList.add('ready');
     (window as unknown as { __scene: SolarScene }).__scene = s;
   })

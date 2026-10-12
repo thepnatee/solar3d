@@ -288,7 +288,7 @@ export function renderResults(s: AppState, m: Model): string {
   <section class="card"><div class="kpis">${cards}</div>
     <ul class="explain">${e.explain.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
   </section>
-  <section class="card">${dayChart}<p class="muted small">ลากแถบเวลาใต้ภาพ 3D เพื่อดูการไหลของไฟแต่ละชั่วโมง • เปลี่ยนเดือนได้ที่มุมล่างของภาพ</p></section>
+  <section class="card">${dayChart}<p class="muted small">ลากแถบเวลาใต้ภาพ 3D เพื่อดูการไหลของไฟแต่ละชั่วโมง • เลือกเดือนที่แถบ 12 เดือนด้านล่างของภาพ</p></section>
   <section class="card">${monthChart}${saveChart}</section>
   <section class="card">${billTable}</section>
   <section class="card">${cf}</section>

@@ -43,7 +43,7 @@ export function editorHtml(o: Offer, installers: Installer[], isNew: boolean): s
   return `
   <form method="dialog" class="editor">
     <h2>${isNew ? 'เพิ่มใบเสนอราคา' : `แก้ไข ${esc(o.id)}`}</h2>
-    <p class="muted small">กรอกตามใบเสนอราคาจริง: ราคา สถานะ VAT จำนวนแผง × วัตต์ (DC kWp) และค่าหน้างาน ระบบจะคำนวณใหม่ทันที • ราคาเก่าถูกเก็บในประวัติของเบราว์เซอร์นี้</p>
+    <p class="muted small">กรอกตามใบเสนอราคาจริง: ราคา สถานะ VAT จำนวนแผง × วัตต์ (DC kWp) และค่าหน้างาน ระบบจะคำนวณใหม่ทันที • ข้อมูลอยู่ในแท็บนี้เท่านั้น ไม่ถูกบันทึกหรือส่งไปที่ใด</p>
     <div class="grid2">
       <label>รหัส <input name="id" required value="${esc(o.id)}" ${isNew ? '' : 'readonly'}></label>
       <label>บริษัท

@@ -1,9 +1,15 @@
 import * as THREE from 'three/webgpu';
-import { color, mix, positionWorldDirection, smoothstep, uniform } from 'three/tsl';
+import { mix, positionWorldDirection, smoothstep, uniform } from 'three/tsl';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { buildHouse, createGlassMaterial } from './house';
+import { buildIsland, buildWater, type Water } from './island';
+import { mat, mesh } from './kit';
 import { createFlowMaterial, createPanelMaterial, panelPower, type FlowMaterial } from './materials';
-import { OVERHANG, PANEL_GAP, PANEL_LONG, PANEL_SHORT, SLAB, panelCapacity, type HouseParams } from './roof';
+import { buildProps } from './props';
+import { PANEL_GAP, PANEL_LONG, PANEL_SHORT, SLAB, panelCapacity, type HouseParams } from './roof';
 import { sunDirection, sunPosition } from './sun';
+import { WeatherFX } from './weather';
+import { WEATHER, type WeatherId } from './weather-model';
 
 export { panelCapacity, usableRoofArea, type HouseParams } from './roof';
 
@@ -23,7 +29,18 @@ export interface SceneState {
   flows: FlowsKw;
   /** kW ที่ใช้สเกลความเร็วของเส้นพลังงาน */
   flowScale: number;
+  weather: WeatherId;
 }
+
+const C = (hex: number) => new THREE.Color(hex);
+/** ชุดสีฟ้า [บน, กลาง, ขอบฟ้า] ตามเวลา/สภาพอากาศ — โทนพาสเทลแบบภาพอ้างอิง */
+const SKY = {
+  day: [C(0x9fcfe9), C(0xdff1f7), C(0xc2e2ed)],
+  sunset: [C(0xb3b5c8), C(0xe8a38e), C(0xf3ca99)],
+  night: [C(0x122c54), C(0x345778), C(0x4d799c)],
+  overcast: [C(0x9fb0bd), C(0xd3dbe0), C(0xc4ced5)],
+  storm: [C(0x5f6f80), C(0x8d9aa6), C(0x9eaab4)],
+};
 
 /**
  * Three r186 always sends `swizzle: 'rgba'` (identity) in texture-view descriptors. Some Chromium builds expose an
@@ -50,20 +67,30 @@ export class SolarScene {
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
   private sun = new THREE.DirectionalLight(0xfff1d6, 3);
-  private hemi = new THREE.HemisphereLight(0xe4f1ff, 0xb3a98f, 1.4);
-  private houseGroup = new THREE.Group();
+  private hemi = new THREE.HemisphereLight(0xdff1f7, 0xb9a88a, 1.3);
+  private lot = new THREE.Group();
   private panelGroup = new THREE.Group();
-  private sunMarker: THREE.Mesh;
+  private sunDisc: THREE.Mesh;
+  private sunHalo: THREE.Mesh;
   private panelMat: THREE.MeshStandardNodeMaterial;
+  private glassMat: THREE.MeshStandardNodeMaterial;
   private windowGlow = uniform(0);
-  private skyZenith = uniform(new THREE.Color(0x3b82c4));
-  private skyHorizon = uniform(new THREE.Color(0xcfe6f7));
+  private skyTop = uniform(new THREE.Color());
+  private skyMid = uniform(new THREE.Color());
+  private skyHorizon = uniform(new THREE.Color());
+  private fog = new THREE.Fog(0xc2e2ed, 90, 330);
+  private water: Water;
+  private fx = new WeatherFX();
   private flows: { pv: FlowMaterial; home: FlowMaterial; grid: FlowMaterial } | null = null;
   private flowSpeeds = { pv: 0, home: 0, grid: 0 };
   private houseKey = '';
   private panelKey = '';
+  private weatherKey: WeatherId | '' = '';
+  private wallTop = 0;
+  private rise = 0;
   private timer = new THREE.Timer();
   private state: SceneState | null = null;
+  private baseHemi = 1;
   /** GPUDevice of the WebGPU backend (null on the WebGL2 fallback) */
   get gpuDevice(): GPUDevice | null {
     return (this.renderer.backend as { device?: GPUDevice }).device ?? null;
@@ -75,36 +102,44 @@ export class SolarScene {
     this.renderer = renderer;
     this.backendName = (renderer.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend ? 'WebGPU' : 'WebGL2';
     this.panelMat = createPanelMaterial(this.backendName === 'WebGPU');
+    this.glassMat = createGlassMaterial(this.windowGlow);
 
-    this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 400);
-    this.camera.position.set(21, 13, 24);
+    this.camera = new THREE.PerspectiveCamera(36, 1, 0.5, 900);
     this.controls = new OrbitControls(this.camera, renderer.domElement);
-    this.controls.target.set(0, 3, 0);
     this.controls.enableDamping = true;
-    this.controls.maxPolarAngle = Math.PI * 0.49;
-    this.controls.minDistance = 8;
-    this.controls.maxDistance = 70;
+    this.controls.dampingFactor = 0.07;
+    this.controls.maxPolarAngle = Math.PI * 0.46;
+    this.controls.minDistance = 14;
+    this.controls.maxDistance = 120;
+    this.controls.autoRotateSpeed = 0.6;
+    this.resetView();
 
-    this.scene.backgroundNode = mix(this.skyHorizon, this.skyZenith, smoothstep(-0.05, 0.6, positionWorldDirection.y));
+    const y = positionWorldDirection.y;
+    this.scene.backgroundNode = mix(mix(this.skyHorizon, this.skyMid, smoothstep(0.0, 0.2, y)), this.skyTop, smoothstep(0.2, 0.8, y));
+    this.scene.fog = this.fog;
 
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera;
-    sc.left = -18;
-    sc.right = 18;
-    sc.top = 18;
-    sc.bottom = -18;
+    sc.left = -24;
+    sc.right = 24;
+    sc.top = 24;
+    sc.bottom = -24;
     sc.near = 1;
-    sc.far = 120;
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.03;
+    sc.far = 160;
+    this.sun.shadow.bias = -0.0005;
+    this.sun.shadow.normalBias = 0.04;
     this.scene.add(this.sun, this.sun.target, this.hemi);
 
-    this.sunMarker = new THREE.Mesh(new THREE.SphereGeometry(1.4, 24, 16), new THREE.MeshBasicNodeMaterial({ color: 0xffe08a }));
-    this.scene.add(this.sunMarker);
+    this.sunDisc = new THREE.Mesh(new THREE.SphereGeometry(5, 24, 16), new THREE.MeshBasicNodeMaterial({ color: 0xfff4ca, fog: false }));
+    this.sunHalo = new THREE.Mesh(
+      new THREE.SphereGeometry(12, 24, 16),
+      new THREE.MeshBasicNodeMaterial({ color: 0xfff8cd, transparent: true, opacity: 0.28, fog: false, depthWrite: false }),
+    );
+    this.scene.add(this.sunDisc, this.sunHalo);
 
-    this.buildEnvironment();
-    this.scene.add(this.houseGroup);
+    this.water = buildWater();
+    this.scene.add(buildIsland(), this.water.mesh, this.fx.group, this.lot);
 
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
@@ -117,189 +152,77 @@ export class SolarScene {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.05;
     await renderer.init();
-    renderer.domElement.setAttribute('aria-label', 'ภาพ 3 มิติ บ้านติดโซลาร์เซลล์');
+    renderer.domElement.setAttribute('aria-label', 'ภาพ 3 มิติ บ้านติดโซลาร์เซลล์บนเกาะจำลอง ลากเพื่อหมุน เลื่อนเพื่อซูม');
     container.prepend(renderer.domElement);
     return new SolarScene(container, renderer);
+  }
+
+  /** พิกเซลที่แผง UI บังด้านขวา — เลื่อนจุดกึ่งกลางภาพไปทางซ้ายให้เกาะอยู่กลางพื้นที่ว่าง */
+  private rightInset = 0;
+
+  setRightInset(px: number): void {
+    this.rightInset = px;
+    this.resize();
   }
 
   private resize(): void {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
+    const d = Math.min(this.rightInset * 0.22, w / 5);
+    this.camera.aspect = (w + 2 * d) / h;
+    if (d > 0) this.camera.setViewOffset(w + 2 * d, h, 2 * d, 0, w, h);
+    else this.camera.clearViewOffset();
+    // จอแคบ → ถอยกล้องให้เห็นเกาะทั้งเกาะ
+    this.camera.fov = w / h < 0.9 ? 48 : 36;
     this.camera.updateProjectionMatrix();
   }
 
-  private std(hex: number, opts: Partial<THREE.MeshStandardNodeMaterialParameters> = {}): THREE.MeshStandardNodeMaterial {
-    return new THREE.MeshStandardNodeMaterial({ color: hex, roughness: 0.85, ...opts });
+  setAutoRotate(on: boolean): void {
+    this.controls.autoRotate = on;
   }
 
-  private mesh(geo: THREE.BufferGeometry, mat: THREE.Material, cast = true, receive = true): THREE.Mesh {
-    const m = new THREE.Mesh(geo, mat);
-    m.castShadow = cast;
-    m.receiveShadow = receive;
-    return m;
+  zoom(factor: number): void {
+    const off = this.camera.position.clone().sub(this.controls.target);
+    const len = THREE.MathUtils.clamp(off.length() * factor, this.controls.minDistance, this.controls.maxDistance);
+    this.camera.position.copy(this.controls.target).add(off.setLength(len));
   }
 
-  private buildEnvironment(): void {
-    const ground = this.mesh(new THREE.CircleGeometry(90, 64), this.std(0x7fae5a), false, true);
-    ground.rotation.x = -Math.PI / 2;
-    this.scene.add(ground);
+  resetView(): void {
+    this.camera.position.set(37, 23, 44);
+    this.controls.target.set(0, 2.5, 0);
+    this.controls.update();
+  }
 
-    // ลูกศรทิศเหนือบนพื้น
-    const shape = new THREE.Shape();
-    shape.moveTo(0, 1.6);
-    shape.lineTo(0.7, -0.6);
-    shape.lineTo(0, -0.2);
-    shape.lineTo(-0.7, -0.6);
-    shape.closePath();
-    const arrow = this.mesh(new THREE.ShapeGeometry(shape), this.std(0xd94a3a), false, false);
-    arrow.rotation.x = -Math.PI / 2;
-    arrow.position.set(-11, 0.03, -9);
-    this.scene.add(arrow);
+  private buildLot(h: HouseParams): void {
+    this.lot.clear();
+    const hb = buildHouse(h, this.glassMat);
+    this.wallTop = hb.wallTop;
+    this.rise = hb.rise;
+    const props = buildProps(h, hb.doorX, this.windowGlow);
+    this.lot.add(hb.group, props.group, this.panelGroup);
 
-    const trunk = this.std(0x7a5232);
-    const leaves = this.std(0x3f7d3a);
-    for (const [x, z, s] of [
-      [-12, -5, 1.2],
-      [-12.5, 4, 1],
-      [9, -9.5, 1.3],
-      [-5, -12, 1.1],
-      [12.5, 2, 0.9],
-    ] as const) {
-      const t = this.mesh(new THREE.CylinderGeometry(0.18 * s, 0.25 * s, 2.2 * s, 8), trunk);
-      t.position.set(x, 1.1 * s, z);
-      const c = this.mesh(new THREE.IcosahedronGeometry(1.6 * s, 1), leaves);
-      c.position.set(x, 2.9 * s, z);
-      this.scene.add(t, c);
+    // เส้นพลังงาน: แผง → อินเวอร์เตอร์ → บ้าน, เสาไฟ ↔ มิเตอร์
+    if (!this.flows) {
+      this.flows = { pv: createFlowMaterial(0xffb020), home: createFlowMaterial(0xffd34d), grid: createFlowMaterial(0x3b8beb, 14) };
     }
-  }
-
-  private buildHouse(h: HouseParams): void {
-    this.houseGroup.clear();
+    const tube = (pts: THREE.Vector3[], fm: FlowMaterial, r = 0.07) =>
+      this.lot.add(mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 64, r, 8, false), fm.material, false, false));
     const W = h.width;
     const D = h.depth;
-    const H = 3 * h.floors;
-    const p = (h.pitchDeg * Math.PI) / 180;
-    const rise = (D / 2) * Math.tan(p);
+    const eaveY = hb.wallTop + SLAB;
+    const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+    const inv = hb.inverter;
+    const met = hb.meter;
+    tube([V(W / 2 - 0.9, eaveY + 0.2, D / 2 - 0.5), V(W / 2 + 0.25, eaveY - 0.1, D / 2 - 0.9), V(inv.x + 0.02, 2.9, inv.z), V(inv.x + 0.02, inv.y + 0.4, inv.z)], this.flows.pv);
+    tube([V(inv.x + 0.02, inv.y - 0.4, inv.z), V(inv.x, 1.0, (inv.z + met.z) / 2), V(met.x + 0.02, met.y - 0.25, met.z)], this.flows.home);
+    tube([props.poleTop, V((props.poleTop.x + met.x) / 2 + 0.6, 5.6, (props.poleTop.z + met.z) / 2), V(met.x + 0.5, 3.0, met.z + 0.2), V(met.x + 0.02, met.y + 0.25, met.z)], this.flows.grid, 0.05);
 
-    // ถนนหน้าบ้าน (หมุนตามบ้าน)
-    const road = this.mesh(new THREE.PlaneGeometry(120, 7), this.std(0x55595f, { roughness: 0.95 }), false, true);
-    road.rotation.x = -Math.PI / 2;
-    road.position.set(0, 0.01, 17);
-    const line = this.mesh(new THREE.PlaneGeometry(120, 0.15), this.std(0xf4f1e8), false, false);
-    line.rotation.x = -Math.PI / 2;
-    line.position.set(0, 0.02, 17);
-    this.houseGroup.add(road, line);
-
-    const base = this.mesh(new THREE.BoxGeometry(W + 1.2, 0.3, D + 1.2), this.std(0xb9b4aa));
-    base.position.y = 0.15;
-    const walls = this.mesh(new THREE.BoxGeometry(W, H, D), this.std(0xf3e9d8));
-    walls.position.y = H / 2 + 0.3;
-    this.houseGroup.add(base, walls);
-
-    // หน้าต่าง (เรืองแสงตอนกลางคืน) + ประตู
-    const winMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.15, metalness: 0.2 });
-    winMat.colorNode = color(0x27445f);
-    winMat.emissiveNode = color(0xffc46b).mul(this.windowGlow);
-    for (let f = 0; f < h.floors; f++) {
-      const y = 0.3 + f * 3 + 1.7;
-      const count = Math.max(2, Math.floor(W / 3));
-      for (let i = 0; i < count; i++) {
-        const x = -W / 2 + ((i + 0.5) * W) / count;
-        if (f === 0 && i === Math.floor(count / 2)) continue;
-        for (const side of [1, -1]) {
-          const win = this.mesh(new THREE.BoxGeometry(1.3, 1.2, 0.08), winMat, false, false);
-          win.position.set(x, y, side * (D / 2 + 0.03));
-          this.houseGroup.add(win);
-        }
-      }
-    }
-    const door = this.mesh(new THREE.BoxGeometry(1.1, 2.2, 0.1), this.std(0x8a5a36), false, false);
-    door.position.set(-W / 2 + (Math.floor(Math.max(2, Math.floor(W / 3)) / 2) + 0.5) * (W / Math.max(2, Math.floor(W / 3))), 1.4, D / 2 + 0.04);
-    this.houseGroup.add(door);
-
-    // หลังคาจั่ว 2 ฝั่ง: +Z = ฝั่งติดแผง
-    const roofMat = this.std(0xb4553a, { roughness: 0.7 });
-    const L = D / 2 / Math.cos(p) + OVERHANG;
-    for (const side of [1, -1]) {
-      const slab = this.mesh(new THREE.BoxGeometry(W + 0.8, SLAB, L), roofMat);
-      const dir = new THREE.Vector3(0, -Math.sin(p), side * Math.cos(p));
-      const normal = new THREE.Vector3(0, Math.cos(p), side * Math.sin(p));
-      const ridge = new THREE.Vector3(0, 0.3 + H + rise, 0);
-      slab.position.copy(ridge).addScaledVector(dir, L / 2).addScaledVector(normal, SLAB / 2);
-      slab.rotation.x = side * p;
-      this.houseGroup.add(slab);
-    }
-    const gable = new THREE.BufferGeometry();
-    const y0 = 0.3 + H;
-    gable.setAttribute('position', new THREE.Float32BufferAttribute([0, y0, -D / 2, 0, y0, D / 2, 0, y0 + rise, 0], 3));
-    gable.computeVertexNormals();
-    for (const side of [1, -1]) {
-      const g = this.mesh(gable, this.std(0xe9dcc4, { side: THREE.DoubleSide }));
-      g.position.x = (side * W) / 2;
-      this.houseGroup.add(g);
-    }
-    const ridgeCap = this.mesh(new THREE.BoxGeometry(W + 0.9, 0.18, 0.3), this.std(0x8e3f2b));
-    ridgeCap.position.set(0, 0.3 + H + rise + SLAB, 0);
-    this.houseGroup.add(ridgeCap);
-
-    // อินเวอร์เตอร์ + มิเตอร์ ที่ผนังด้าน +X, เสาไฟฟ้าริมถนน
-    const inv = this.mesh(new THREE.BoxGeometry(0.2, 0.7, 0.5), this.std(0xf7f7f7, { roughness: 0.4 }));
-    inv.position.set(W / 2 + 0.12, 1.6, D / 2 - 1.2);
-    const meter = this.mesh(new THREE.BoxGeometry(0.18, 0.45, 0.35), this.std(0x9aa3ad, { roughness: 0.5 }));
-    meter.position.set(W / 2 + 0.11, 1.8, D / 2 - 2.6);
-    const pole = this.mesh(new THREE.CylinderGeometry(0.14, 0.18, 8.5, 10), this.std(0x9c9a94));
-    pole.position.set(W / 2 + 4.5, 4.25, 14);
-    const arm = this.mesh(new THREE.BoxGeometry(2.2, 0.12, 0.12), this.std(0x6b6b6b));
-    arm.position.set(W / 2 + 4.5, 8, 14);
-    this.houseGroup.add(inv, meter, pole, arm, this.panelGroup);
-
-    // เส้นพลังงาน
-    const tube = (pts: THREE.Vector3[], fm: FlowMaterial, r = 0.06) => {
-      const curve = new THREE.CatmullRomCurve3(pts);
-      this.houseGroup.add(this.mesh(new THREE.TubeGeometry(curve, 64, r, 8, false), fm.material, false, false));
-    };
-    if (!this.flows) {
-      this.flows = {
-        pv: createFlowMaterial(0xffb020),
-        home: createFlowMaterial(0xffd34d),
-        grid: createFlowMaterial(0x3b8beb, 14),
-      };
-    }
-    const eaveY = 0.3 + H + SLAB;
-    tube(
-      [
-        new THREE.Vector3(W / 2 - 0.8, eaveY + 0.15, D / 2 - 0.6),
-        new THREE.Vector3(W / 2 + 0.2, eaveY, D / 2 - 0.9),
-        new THREE.Vector3(W / 2 + 0.16, 2.6, D / 2 - 1.2),
-        new THREE.Vector3(W / 2 + 0.16, 1.95, D / 2 - 1.2),
-      ],
-      this.flows.pv,
-    );
-    tube(
-      [
-        new THREE.Vector3(W / 2 + 0.16, 1.25, D / 2 - 1.2),
-        new THREE.Vector3(W / 2 + 0.14, 1.0, D / 2 - 1.9),
-        new THREE.Vector3(W / 2 + 0.14, 1.5, D / 2 - 2.6),
-      ],
-      this.flows.home,
-    );
-    tube(
-      [
-        new THREE.Vector3(W / 2 + 4.5, 7.9, 14),
-        new THREE.Vector3(W / 2 + 2.5, 6.2, D / 2 + 4),
-        new THREE.Vector3(W / 2 + 0.6, 3.4, D / 2 - 2.2),
-        new THREE.Vector3(W / 2 + 0.14, 2.05, D / 2 - 2.6),
-      ],
-      this.flows.grid,
-      0.045,
-    );
-
-    this.houseGroup.rotation.y = this.bearingToRotation(h.bearingDeg);
-    this.controls.target.set(0, (H + rise) / 2 + 0.6, 0);
+    this.lot.rotation.y = this.bearingToRotation(h.bearingDeg);
+    this.controls.target.set(0, Math.min(5, (hb.wallTop + hb.rise) / 2), 0);
   }
 
   private bearingToRotation(bearingDeg: number): number {
@@ -315,19 +238,17 @@ export class SolarScene {
     this.placedPanels = n;
     if (n <= 0) return;
     const p = (h.pitchDeg * Math.PI) / 180;
-    const H = 3 * h.floors;
-    const rise = (h.depth / 2) * Math.tan(p);
     const pw = cap.landscape ? PANEL_LONG : PANEL_SHORT;
     const ph = cap.landscape ? PANEL_SHORT : PANEL_LONG;
     const rows = Math.ceil(n / cap.cols);
     const dir = new THREE.Vector3(0, -Math.sin(p), Math.cos(p));
     const normal = new THREE.Vector3(0, Math.cos(p), Math.sin(p));
-    const ridge = new THREE.Vector3(0, 0.3 + H + rise, 0);
+    const ridge = new THREE.Vector3(0, this.wallTop + this.rise, 0);
     const vStart = (cap.slopeLen - rows * (ph + PANEL_GAP)) / 2;
 
-    const frameGeo = new THREE.BoxGeometry(PANEL_SHORT, 0.045, PANEL_LONG);
+    const frameGeo = new THREE.BoxGeometry(PANEL_SHORT, 0.05, PANEL_LONG);
     const glassGeo = new THREE.PlaneGeometry(PANEL_SHORT * 0.975, PANEL_LONG * 0.98).rotateX(-Math.PI / 2);
-    const frameMat = this.std(0xc9ced6, { metalness: 0.7, roughness: 0.35 });
+    const frameMat = mat(0xd5dae0, { metalness: 0.6, roughness: 0.35 });
     for (let i = 0; i < n; i++) {
       const r = Math.floor(i / cap.cols);
       const inRow = r === rows - 1 ? n - r * cap.cols : cap.cols;
@@ -335,11 +256,11 @@ export class SolarScene {
       const u = (c - (inRow - 1) / 2) * (pw + PANEL_GAP);
       const v = vStart + (r + 0.5) * (ph + PANEL_GAP);
       const panel = new THREE.Group();
-      const frame = this.mesh(frameGeo, frameMat);
-      const glass = this.mesh(glassGeo, this.panelMat, false, true);
-      glass.position.y = 0.024;
-      panel.add(frame, glass);
-      panel.position.copy(ridge).addScaledVector(dir, v).addScaledVector(normal, SLAB + 0.09);
+      panel.add(mesh(frameGeo, frameMat));
+      const glass = mesh(glassGeo, this.panelMat, false, true);
+      glass.position.y = 0.027;
+      panel.add(glass);
+      panel.position.copy(ridge).addScaledVector(dir, v).addScaledVector(normal, SLAB + 0.11);
       panel.position.x = u;
       panel.rotation.set(p, cap.landscape ? Math.PI / 2 : 0, 0, 'XYZ');
       this.panelGroup.add(panel);
@@ -351,7 +272,7 @@ export class SolarScene {
     const hk = JSON.stringify(state.house);
     if (hk !== this.houseKey) {
       this.houseKey = hk;
-      this.buildHouse(state.house);
+      this.buildLot(state.house);
       this.panelKey = '';
     }
     const pk = `${hk}|${state.panelCount}`;
@@ -359,7 +280,11 @@ export class SolarScene {
       this.panelKey = pk;
       this.buildPanels(state.house, state.panelCount);
     }
-    this.updateSun();
+    if (state.weather !== this.weatherKey) {
+      this.weatherKey = state.weather;
+      this.fx.setWeather(state.weather);
+    }
+    this.updateSky();
     const scale = Math.max(state.flowScale, 0.5);
     this.flowSpeeds.pv = state.flows.pv / scale;
     this.flowSpeeds.home = state.flows.self / scale;
@@ -374,25 +299,43 @@ export class SolarScene {
     panelPower.value = Math.min(1, state.flows.pv / Math.max(0.1, state.flowScale));
   }
 
-  private updateSun(): void {
+  private updateSky(): void {
     if (!this.state) return;
-    const pos = sunPosition(this.state.lat, this.state.month, this.state.hour);
+    const st = this.state;
+    const w = WEATHER[st.weather];
+    const pos = sunPosition(st.lat, st.month, st.hour);
     const [x, y, z] = sunDirection(pos);
-    const dist = 60;
-    this.sun.position.set(x * dist, Math.max(y, 0.02) * dist, z * dist);
-    this.sun.target.position.set(0, 0, 0);
-    this.sunMarker.position.set(x * 85, y * 85, z * 85);
-    this.sunMarker.visible = y > -0.02;
-    const day = THREE.MathUtils.smoothstep(y, -0.05, 0.25);
-    this.sun.intensity = 3.2 * day;
-    this.hemi.intensity = 0.35 + 1.35 * day;
-    this.windowGlow.value = 1 - THREE.MathUtils.smoothstep(y, -0.08, 0.1);
-    const warm = 1 - THREE.MathUtils.smoothstep(y, 0.02, 0.35);
-    this.sun.color.setRGB(1, 0.95 - 0.25 * warm, 0.85 - 0.45 * warm);
-    const zen = new THREE.Color(0x0b1430).lerp(new THREE.Color(0x3b82c4), day);
-    const hor = new THREE.Color(0x1c2640).lerp(new THREE.Color(0xf6b27a), warm * day).lerp(new THREE.Color(0xcfe6f7), day * (1 - warm));
-    this.skyZenith.value.copy(zen);
-    this.skyHorizon.value.copy(hor);
+    this.sun.position.set(x * 70, Math.max(y, 0.03) * 70, z * 70);
+    const day = THREE.MathUtils.smoothstep(y, -0.06, 0.22);
+    const night = 1 - day;
+    const sunset = day * (1 - THREE.MathUtils.smoothstep(y, 0.04, 0.32));
+    const overcast = 1 - w.sun;
+
+    this.sun.intensity = 3.4 * day * w.sun;
+    this.sun.color.setRGB(1, 0.95 - 0.28 * sunset, 0.86 - 0.5 * sunset);
+    this.hemi.color.set(0xdff1f7).lerp(C(0x7d9ccc), night);
+    this.hemi.groundColor.set(0xb9a88a).lerp(C(0x34496a), night);
+    this.baseHemi = 1.25 + day * (0.35 + overcast * 0.5);
+    this.hemi.intensity = this.baseHemi;
+    this.windowGlow.value = 1 - THREE.MathUtils.smoothstep(y, -0.1, 0.08) * (0.3 + 0.7 * w.sun);
+
+    const clearSky = (i: number) => SKY.day[i]!.clone().lerp(SKY.sunset[i]!, sunset);
+    const grey = (i: number) => (st.weather === 'storm' ? SKY.storm[i]! : SKY.overcast[i]!);
+    const col = (i: number) => clearSky(i).lerp(grey(i), Math.min(1, overcast * 1.15)).lerp(SKY.night[i]!, night);
+    this.skyTop.value.copy(col(0));
+    this.skyMid.value.copy(col(1));
+    this.skyHorizon.value.copy(col(2));
+    this.fog.color.copy(col(2));
+
+    this.water.shallow.value.set(0x7fe0d6).lerp(C(0x8ccfcb), overcast).lerp(C(0x29658d), night);
+    this.water.deep.value.set(0x3e9fbe).lerp(C(0x4f8ea3), overcast).lerp(C(0x124674), night);
+    this.water.sparkle.value = day * (0.25 + 0.75 * w.sun);
+
+    const dist = 160;
+    this.sunDisc.position.set(x * dist, y * dist, z * dist);
+    this.sunHalo.position.copy(this.sunDisc.position);
+    this.sunDisc.visible = this.sunHalo.visible = y > -0.03 && w.sun > 0.2;
+    this.fx.setNight(night);
   }
 
   private frame(): void {
@@ -403,6 +346,8 @@ export class SolarScene {
       this.flows.home.offset.value += this.flowSpeeds.home * dt * 1.6;
       this.flows.grid.offset.value += this.flowSpeeds.grid * dt * 1.6;
     }
+    const flash = this.fx.tick(dt);
+    this.hemi.intensity = this.baseHemi + flash * 3;
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
