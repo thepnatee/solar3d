@@ -5,6 +5,9 @@ import {
   SWEEP_DAY_FRACTIONS,
   SWEEP_SIZES,
   bill,
+  compareDayFractions,
+  dayFractionFromMeter,
+  dayNightSplit,
   buildContext,
   cashflow,
   evaluateOffer,
@@ -203,5 +206,43 @@ describe('size sweep (CPU reference for the WGSL kernel)', () => {
     const i = d * SWEEP_SIZES.length + s;
     expect(out.grossSaving[i]).toBeCloseTo(ref.annual.grossSaving, 6);
     expect(out.selfUseKwh[i]).toBeCloseTo(ref.annual.selfUseKwh, 6);
+  });
+});
+
+describe('monthly bill history', () => {
+  it('ignores history with fewer than 3 months', () => {
+    const ctx = ctxFor({ monthlyKwh: [700, 800, null, null, null, null, null, null, null, null, null, null] });
+    expect(ctx.monthlyKwh).toBeCloseTo(787.07, 1);
+  });
+  it('uses the average and per-month factors when 3+ months are given', () => {
+    const hist = [600, 650, 900, 1000, 950, 800, 750, 700, 700, 720, 650, 600];
+    const ctx = ctxFor({ monthlyKwh: hist });
+    const avg = hist.reduce((a, b) => a + b, 0) / 12;
+    expect(ctx.monthlyKwh).toBeCloseTo(avg, 6);
+    const sim = simulateForKwp(ctx, 0);
+    sim.months.forEach((m, i) => expect(m.loadKwh).toBeCloseTo(hist[i]!, 6));
+  });
+});
+
+describe('day / night split', () => {
+  it('puts all self-use in daytime and keeps totals consistent', () => {
+    const ctx = ctxFor();
+    const sim = simulateForKwp(ctx, 4.72);
+    const dn = dayNightSplit(sim, ctx.tariff);
+    expect(dn.dayLoad + dn.nightLoad).toBeCloseTo(sim.annual.loadKwh, 6);
+    expect(dn.daySelf).toBeCloseTo(sim.annual.selfUseKwh, 6);
+    expect(dn.dayImport + dn.nightImport).toBeCloseTo(sim.annual.importKwh, 6);
+    expect(dn.dayLoad / sim.annual.loadKwh).toBeCloseTo(0.8, 6);
+    expect(dn.nightCostThb).toBeGreaterThan(0);
+  });
+  it('shifting use into daytime saves more with the same array', () => {
+    const rows = compareDayFractions(DEFAULT_SCENARIO, DEFAULT_ASSUMPTIONS, 4.72, [0.2, 0.5, 0.8]);
+    expect(rows[1]!.grossSaving).toBeGreaterThan(rows[0]!.grossSaving);
+    expect(rows[2]!.grossSaving).toBeGreaterThan(rows[1]!.grossSaving);
+  });
+  it('computes the daytime share from meter readings', () => {
+    expect(dayFractionFromMeter(1000, 1018, 1030)).toBeCloseTo(0.6, 9);
+    expect(dayFractionFromMeter(1000, 990, 1030)).toBeNull();
+    expect(dayFractionFromMeter(1000, 1010, 1000)).toBeNull();
   });
 });

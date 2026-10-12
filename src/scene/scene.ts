@@ -8,8 +8,6 @@ import { createFlowMaterial, createPanelMaterial, panelPower, type FlowMaterial 
 import { buildProps } from './props';
 import { PANEL_GAP, PANEL_LONG, PANEL_SHORT, SLAB, panelCapacity, type HouseParams } from './roof';
 import { sunDirection, sunPosition } from './sun';
-import { WeatherFX } from './weather';
-import { WEATHER, type WeatherId } from './weather-model';
 
 export { panelCapacity, usableRoofArea, type HouseParams } from './roof';
 
@@ -29,17 +27,14 @@ export interface SceneState {
   flows: FlowsKw;
   /** kW ที่ใช้สเกลความเร็วของเส้นพลังงาน */
   flowScale: number;
-  weather: WeatherId;
 }
 
 const C = (hex: number) => new THREE.Color(hex);
-/** ชุดสีฟ้า [บน, กลาง, ขอบฟ้า] ตามเวลา/สภาพอากาศ — โทนพาสเทลแบบภาพอ้างอิง */
+/** ชุดสีฟ้า [บน, กลาง, ขอบฟ้า] ตามเวลา — โทนพาสเทล */
 const SKY = {
   day: [C(0x9fcfe9), C(0xdff1f7), C(0xc2e2ed)],
   sunset: [C(0xb3b5c8), C(0xe8a38e), C(0xf3ca99)],
   night: [C(0x122c54), C(0x345778), C(0x4d799c)],
-  overcast: [C(0x9fb0bd), C(0xd3dbe0), C(0xc4ced5)],
-  storm: [C(0x5f6f80), C(0x8d9aa6), C(0x9eaab4)],
 };
 
 /**
@@ -80,12 +75,12 @@ export class SolarScene {
   private skyHorizon = uniform(new THREE.Color());
   private fog = new THREE.Fog(0xc2e2ed, 90, 330);
   private water: Water;
-  private fx = new WeatherFX();
+  private stars: THREE.InstancedMesh;
+  private starMat: THREE.MeshBasicNodeMaterial;
   private flows: { pv: FlowMaterial; home: FlowMaterial; grid: FlowMaterial } | null = null;
   private flowSpeeds = { pv: 0, home: 0, grid: 0 };
   private houseKey = '';
   private panelKey = '';
-  private weatherKey: WeatherId | '' = '';
   private wallTop = 0;
   private rise = 0;
   private timer = new THREE.Timer();
@@ -139,7 +134,20 @@ export class SolarScene {
     this.scene.add(this.sunDisc, this.sunHalo);
 
     this.water = buildWater();
-    this.scene.add(buildIsland(), this.water.mesh, this.fx.group, this.lot);
+    // ดาวกลางคืน
+    this.starMat = new THREE.MeshBasicNodeMaterial({ color: 0xf7fbff, transparent: true, opacity: 0, fog: false });
+    this.stars = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.5, 0), this.starMat, 140);
+    const m4 = new THREE.Matrix4();
+    let seed = 777;
+    const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) | 0) >>> 0) / 4294967296;
+    for (let i = 0; i < 140; i++) {
+      const a = rnd() * Math.PI * 2;
+      const el = 0.12 + rnd() * 1.3;
+      const sc = 0.6 + rnd() * 1.3;
+      m4.makeScale(sc, sc, sc).setPosition(Math.cos(a) * Math.cos(el) * 200, Math.sin(el) * 200, Math.sin(a) * Math.cos(el) * 200);
+      this.stars.setMatrixAt(i, m4);
+    }
+    this.scene.add(buildIsland(), this.water.mesh, this.stars, this.lot);
 
     new ResizeObserver(() => this.resize()).observe(container);
     this.resize();
@@ -160,11 +168,11 @@ export class SolarScene {
     return new SolarScene(container, renderer);
   }
 
-  /** พิกเซลที่แผง UI บังด้านขวา — เลื่อนจุดกึ่งกลางภาพไปทางซ้ายให้เกาะอยู่กลางพื้นที่ว่าง */
-  private rightInset = 0;
+  /** เลื่อนจุดกึ่งกลางภาพไปทางขวา (px) เพื่อไม่ให้การ์ดด้านซ้ายบังตัวบ้าน */
+  private centerShift = 0;
 
-  setRightInset(px: number): void {
-    this.rightInset = px;
+  setCenterShift(px: number): void {
+    this.centerShift = px;
     this.resize();
   }
 
@@ -172,9 +180,9 @@ export class SolarScene {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, false);
-    const d = Math.min(this.rightInset * 0.22, w / 5);
+    const d = Math.min(Math.abs(this.centerShift), w / 5);
     this.camera.aspect = (w + 2 * d) / h;
-    if (d > 0) this.camera.setViewOffset(w + 2 * d, h, 2 * d, 0, w, h);
+    if (d > 0) this.camera.setViewOffset(w + 2 * d, h, this.centerShift > 0 ? 0 : 2 * d, 0, w, h);
     else this.camera.clearViewOffset();
     // จอแคบ → ถอยกล้องให้เห็นเกาะทั้งเกาะ
     this.camera.fov = w / h < 0.9 ? 48 : 36;
@@ -280,10 +288,6 @@ export class SolarScene {
       this.panelKey = pk;
       this.buildPanels(state.house, state.panelCount);
     }
-    if (state.weather !== this.weatherKey) {
-      this.weatherKey = state.weather;
-      this.fx.setWeather(state.weather);
-    }
     this.updateSky();
     const scale = Math.max(state.flowScale, 0.5);
     this.flowSpeeds.pv = state.flows.pv / scale;
@@ -302,40 +306,37 @@ export class SolarScene {
   private updateSky(): void {
     if (!this.state) return;
     const st = this.state;
-    const w = WEATHER[st.weather];
     const pos = sunPosition(st.lat, st.month, st.hour);
     const [x, y, z] = sunDirection(pos);
     this.sun.position.set(x * 70, Math.max(y, 0.03) * 70, z * 70);
     const day = THREE.MathUtils.smoothstep(y, -0.06, 0.22);
     const night = 1 - day;
     const sunset = day * (1 - THREE.MathUtils.smoothstep(y, 0.04, 0.32));
-    const overcast = 1 - w.sun;
-
-    this.sun.intensity = 3.4 * day * w.sun;
+    this.sun.intensity = 3.0 * day;
     this.sun.color.setRGB(1, 0.95 - 0.28 * sunset, 0.86 - 0.5 * sunset);
     this.hemi.color.set(0xdff1f7).lerp(C(0x7d9ccc), night);
     this.hemi.groundColor.set(0xb9a88a).lerp(C(0x34496a), night);
-    this.baseHemi = 1.25 + day * (0.35 + overcast * 0.5);
+    this.baseHemi = 1.25 + day * 0.4;
     this.hemi.intensity = this.baseHemi;
-    this.windowGlow.value = 1 - THREE.MathUtils.smoothstep(y, -0.1, 0.08) * (0.3 + 0.7 * w.sun);
+    this.windowGlow.value = 1 - THREE.MathUtils.smoothstep(y, -0.1, 0.08);
 
     const clearSky = (i: number) => SKY.day[i]!.clone().lerp(SKY.sunset[i]!, sunset);
-    const grey = (i: number) => (st.weather === 'storm' ? SKY.storm[i]! : SKY.overcast[i]!);
-    const col = (i: number) => clearSky(i).lerp(grey(i), Math.min(1, overcast * 1.15)).lerp(SKY.night[i]!, night);
+    const col = (i: number) => clearSky(i).lerp(SKY.night[i]!, night);
     this.skyTop.value.copy(col(0));
     this.skyMid.value.copy(col(1));
     this.skyHorizon.value.copy(col(2));
     this.fog.color.copy(col(2));
 
-    this.water.shallow.value.set(0x7fe0d6).lerp(C(0x8ccfcb), overcast).lerp(C(0x29658d), night);
-    this.water.deep.value.set(0x3e9fbe).lerp(C(0x4f8ea3), overcast).lerp(C(0x124674), night);
-    this.water.sparkle.value = day * (0.25 + 0.75 * w.sun);
+    this.water.shallow.value.set(0x7fe0d6).lerp(C(0x29658d), night);
+    this.water.deep.value.set(0x3e9fbe).lerp(C(0x124674), night);
+    this.water.sparkle.value = day;
 
     const dist = 160;
     this.sunDisc.position.set(x * dist, y * dist, z * dist);
     this.sunHalo.position.copy(this.sunDisc.position);
-    this.sunDisc.visible = this.sunHalo.visible = y > -0.03 && w.sun > 0.2;
-    this.fx.setNight(night);
+    this.sunDisc.visible = this.sunHalo.visible = y > -0.03;
+    this.starMat.opacity = Math.max(0, night - 0.3) * 1.3;
+    this.stars.visible = this.starMat.opacity > 0.01;
   }
 
   private frame(): void {
@@ -346,8 +347,7 @@ export class SolarScene {
       this.flows.home.offset.value += this.flowSpeeds.home * dt * 1.6;
       this.flows.grid.offset.value += this.flowSpeeds.grid * dt * 1.6;
     }
-    const flash = this.fx.tick(dt);
-    this.hemi.intensity = this.baseHemi + flash * 3;
+    this.hemi.intensity = this.baseHemi;
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }

@@ -80,6 +80,8 @@ export interface Scenario {
   roofAreaM2: number | null;
   roofSurveyed: boolean;
   tariffId: string;
+  /** หน่วยไฟย้อนหลังรายเดือน ม.ค.–ธ.ค. จากบิล/แอปการไฟฟ้า (null = ไม่มีข้อมูลเดือนนั้น) */
+  monthlyKwh?: (number | null)[];
 }
 
 export interface Assumptions {

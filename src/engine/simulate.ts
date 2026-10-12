@@ -2,8 +2,34 @@ import { DAYS_IN_MONTH, HOURS, MONTHS, getLoadShape, hourlyLoadFractions, solarH
 import { bill, getTariff, invertBill } from './tariff';
 import type { Assumptions, HourlyMonth, MonthResult, Scenario, SimulationResult, TariffVersion } from './types';
 
-/** หน่วยไฟต่อเดือนที่ใช้จำลอง: ใช้ kWh จริงจากบิลก่อน ถ้าไม่มีจึงคำนวณย้อนจากยอดเงิน */
+/** ต้องมีอย่างน้อยกี่เดือนจึงใช้ประวัติรายเดือนแทนค่าเฉลี่ย */
+export const MIN_HISTORY_MONTHS = 3;
+
+export interface MonthlyHistory {
+  /** จำนวนเดือนที่กรอก */
+  months: number;
+  average: number;
+  /** ตัวคูณรายเดือน (เดือนที่ไม่มีข้อมูล = 1) */
+  factors: number[];
+}
+
+/** สรุปประวัติหน่วยไฟ 12 เดือน — null ถ้ามีข้อมูลน้อยกว่า MIN_HISTORY_MONTHS เดือน */
+export function monthlyHistory(s: Scenario): MonthlyHistory | null {
+  const vals = (s.monthlyKwh ?? []).slice(0, MONTHS);
+  const filled = vals.filter((v): v is number => v != null && v > 0);
+  if (filled.length < MIN_HISTORY_MONTHS) return null;
+  const average = filled.reduce((a, b) => a + b, 0) / filled.length;
+  const factors = Array.from({ length: MONTHS }, (_, m) => {
+    const v = vals[m];
+    return v != null && v > 0 ? v / average : 1;
+  });
+  return { months: filled.length, average, factors };
+}
+
+/** หน่วยไฟต่อเดือนที่ใช้จำลอง: ประวัติ 12 เดือน > kWh จากบิล > คำนวณย้อนจากยอดเงิน */
 export function monthlyConsumptionKwh(s: Scenario, t: TariffVersion = getTariff(s.tariffId)): number {
+  const hist = monthlyHistory(s);
+  if (hist) return hist.average;
   if (s.billedKwh != null && s.billedKwh > 0) return s.billedKwh;
   return invertBill(s.billMonthlyThb, t);
 }
@@ -25,6 +51,8 @@ export interface SimulationContext {
   assumptions: Assumptions;
   tariff: TariffVersion;
   monthlyKwh: number;
+  /** ตัวคูณรายเดือนที่ใช้จริง (จากประวัติบิล ถ้ามี) */
+  monthlyLoadFactors: number[];
   loadFractions: number[];
   load: number[][];
   pvPerKwp: number[][];
@@ -34,13 +62,15 @@ export function buildContext(scenario: Scenario, assumptions: Assumptions, sunFa
   const tariff = getTariff(scenario.tariffId);
   const monthlyKwh = monthlyConsumptionKwh(scenario, tariff);
   const loadFractions = hourlyLoadFractions(getLoadShape(scenario.loadShape).weights, scenario.dayUseFraction);
+  const monthlyLoadFactors = monthlyHistory(scenario)?.factors ?? assumptions.monthlyLoadFactors;
   return {
     scenario,
     assumptions,
     tariff,
     monthlyKwh,
+    monthlyLoadFactors,
     loadFractions,
-    load: loadMatrix(monthlyKwh, loadFractions, assumptions.monthlyLoadFactors),
+    load: loadMatrix(monthlyKwh, loadFractions, monthlyLoadFactors),
     pvPerKwp: pvPerKwpMatrix(assumptions, sunFactor),
   };
 }

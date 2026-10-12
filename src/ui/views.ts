@@ -9,6 +9,8 @@ import {
   getLoadShape,
   hourlyLoadFractions,
   marginalRate,
+  type DayNightSplit,
+  type DayShiftRow,
   type OfferEvaluation,
   type Recommendation,
   type SimulationContext,
@@ -30,6 +32,10 @@ export interface Model {
   orientation: number;
   panelCount: number;
   capacity: number;
+  /** แยกผลกลางวัน/กลางคืนของแพ็กเกจที่เลือก */
+  dn: DayNightSplit | null;
+  /** จำลองย้ายการใช้ไฟไปกลางวัน (ขนาดแผงเดิม) */
+  shift: DayShiftRow[] | null;
 }
 
 export const BEARINGS: { deg: number; label: string }[] = [
@@ -49,17 +55,74 @@ const opt = (v: string | number, label: string, cur: string | number) =>
 const range = (path: string, min: number, max: number, step: number, unit: string, scale = 1) =>
   `<div class="range-row"><input type="range" data-path="${path}" data-scale="${scale}" min="${min}" max="${max}" step="${step}" aria-label="${esc(unit)}"><output data-out="${path}" data-scale="${scale}" data-unit="${esc(unit)}"></output></div>`;
 
-/* ---------------------------------------------------------------- บ้าน & การใช้ไฟ */
+/* ---------------------------------------------------------------- กรอกข้อมูล (มีคำแนะนำว่าหาจากไหน) */
+const help = (title: string, body: string, open = false) =>
+  `<details class="help"${open ? ' open' : ''}><summary>💡 ${title}</summary><div class="help-body">${body}</div></details>`;
+
+const appName = (s: AppState) => (s.scenario.utility === 'MEA' ? 'MEA Smart Life (การไฟฟ้านครหลวง)' : 'PEA Smart Plus (การไฟฟ้าส่วนภูมิภาค)');
+
+/** ภาพจำลองบิล ชี้ตำแหน่งตัวเลขที่ต้องใช้ (ตัวเลขคำนวณจากสูตรค่าไฟจริงที่ 787 หน่วย) */
+function billMock(): string {
+  const b = billBreakdown(787);
+  const row = (k: string, v: string, pin = '', hl = false) =>
+    `<div class="bm-row${hl ? ' hl' : ''}"><span>${k}</span><b>${v}${pin ? ` <i class="pin">${pin}</i>` : ''}</b></div>`;
+  return `<figure class="bill-mock" aria-label="ภาพจำลองบิลค่าไฟ">
+    <div class="bm-head">ใบแจ้งค่าไฟฟ้า <small>ภาพจำลองเพื่ออธิบาย — ไม่ใช่บิลจริง</small></div>
+    ${row('ประเภทผู้ใช้ไฟฟ้า', '1.2 บ้านอยู่อาศัย', 'D')}
+    ${row('เลขอ่านครั้งนี้ / ครั้งก่อน', '45,210 / 44,423')}
+    ${row('จำนวนหน่วย (kWh)', '787', 'B', true)}
+    ${row('ค่าพลังงานไฟฟ้า', num(b.energy, 2))}
+    ${row('ค่า Ft', num(b.ft, 2))}
+    ${row('ค่าบริการรายเดือน', num(b.service, 2))}
+    ${row('ภาษีมูลค่าเพิ่ม 7%', num(b.vat, 2))}
+    ${row('รวมเงินที่ต้องชำระ', num(b.total, 2), 'A', true)}
+  </figure>`;
+}
+
 export function renderHome(s: AppState): string {
+  const months = MONTH_SHORT_TH.map(
+    (n, i) => `<label class="mk"><span>${n}</span><input type="number" inputmode="numeric" min="0" step="1" data-path="scenario.monthlyKwh.${i}" data-type="nullable" placeholder="kWh"></label>`,
+  ).join('');
   return `
+  <details class="card onboard" ${s.meta.visited ? '' : 'open'}>
+    <summary><h2>👋 เริ่มต้นใน 3 ขั้น</h2></summary>
+    <ol class="steps-list">
+      <li><b>หยิบบิลค่าไฟ</b> (กระดาษหรือในแอป ${esc(appName(s))}) — ใช้แค่ <b>ยอดเงิน (A)</b> กับ <b>จำนวนหน่วย (B)</b></li>
+      <li><b>บอกว่าใช้ไฟกลางวันมากแค่ไหน</b> — เดาได้ หรือจดเลขมิเตอร์ให้แม่นขึ้น</li>
+      <li><b>ดูผล</b> แท็บ "ผล & คำแนะนำ" และ "กลางวัน/กลางคืน" แล้วค่อยขอใบเสนอราคาจากผู้ติดตั้ง</li>
+    </ol>
+    ${billMock()}
+    <p class="muted small">ข้อมูลที่กรอกถูกบันทึกในเบราว์เซอร์เครื่องนี้เท่านั้น (localStorage) ไม่ส่งไปที่ใด — ลบได้ที่ปุ่ม "ล้างข้อมูล" ด้านบน</p>
+  </details>
+
   <section class="card">
-    <h2><span class="step">1</span>บ้านของคุณ</h2>
+    <div class="row between"><h2>ความครบของข้อมูล</h2><span data-show="completeScore"></span></div>
+    <div data-show="completeness"></div>
+  </section>
+
+  <section class="card" id="sec-bill">
+    <h2><span class="step">1</span>ค่าไฟของบ้าน</h2>
     <div class="grid2">
       <label>จังหวัด
         <select data-path="scenario.province">${PROVINCES.map((p) => opt(p.name, p.name, s.scenario.province)).join('')}</select>
       </label>
       <div class="field"><span>การไฟฟ้า</span><b data-show="utility"></b></div>
     </div>
+    <label>ค่าไฟเฉลี่ยต่อเดือน (บาท) <i class="pin">A</i></label>
+    <div class="chips">${[2000, 3000, 3500, 4000, 5000].map((v) => `<button type="button" class="chip" data-action="bill" data-value="${v}">${num(v)}</button>`).join('')}</div>
+    ${range('scenario.billMonthlyThb', 300, 15000, 50, 'บาท/เดือน')}
+    ${help('ยอดค่าไฟหาจากไหน?', `ดูบรรทัด <b>"รวมเงินที่ต้องชำระ"</b> ท้ายบิล (รวม VAT แล้ว) — ใช้ค่าเฉลี่ยหลายเดือนจะดีกว่าเดือนเดียว เพราะหน้าร้อนแอร์ทำงานหนักกว่า`)}
+    <label>จำนวนหน่วยจากบิล (kWh/เดือน) <i class="pin">B</i> <small>— แม่นกว่าคำนวณย้อนจากยอดเงิน</small>
+      <input type="number" inputmode="decimal" min="0" step="1" data-path="scenario.billedKwh" data-type="nullable" placeholder="ไม่ทราบ — ระบบจะคำนวณย้อนจากยอดเงินให้">
+    </label>
+    ${help('จำนวนหน่วยอยู่ตรงไหนในบิล?', `ช่อง <b>"จำนวนหน่วย"</b> หรือ "หน่วยที่ใช้" (= เลขอ่านครั้งนี้ − ครั้งก่อน) ถ้าหาไม่เจอ เว้นว่างได้ ระบบคำนวณย้อนจากยอดเงินด้วยอัตราขั้นบันได + Ft + VAT ให้`)}
+    <div class="note" data-show="billCheck"></div>
+    <details class="sub">
+      <summary>📅 มีบิลย้อนหลัง? กรอกหน่วยรายเดือน (แม่นที่สุด) <span data-show="historyBadge"></span></summary>
+      ${help('ดูย้อนหลังได้ที่ไหน?', `เปิดแอป <b>${esc(appName(s))}</b> → เมนูประวัติค่าไฟฟ้า/การใช้ไฟ จะเห็นหน่วย (kWh) ย้อนหลังรายเดือน หรือใช้บิลกระดาษที่เก็บไว้ — กรอกอย่างน้อย 3 เดือน ระบบจะใช้ค่าเฉลี่ยและรูปแบบหน้าร้อน/หน้าหนาวของบ้านคุณแทนค่าประมาณ`, true)}
+      <div class="month-grid">${months}</div>
+      <button type="button" class="btn sm ghost" data-action="clear-history">ล้างหน่วยรายเดือน</button>
+    </details>
     <div class="field">
       <span>ระบบไฟบ้าน</span>
       <div class="seg" role="radiogroup" aria-label="ระบบไฟบ้าน">
@@ -75,23 +138,31 @@ export function renderHome(s: AppState): string {
           .join('')}
       </div>
     </div>
+    ${help('ดูยังไงว่าบ้าน 1 เฟส หรือ 3 เฟส?', `ดูที่<b>มิเตอร์หน้าบ้าน</b>: 1 เฟสมักเขียน 230V และขนาด เช่น 5(15)A, 15(45)A — 3 เฟสมักเขียน 3×230/400V หรือมีสายเข้ามิเตอร์ 4 เส้น บ้านทั่วไปส่วนใหญ่เป็น 1 เฟส ถ้าไม่แน่ใจถามช่างตอนสำรวจ`)}
   </section>
 
-  <section class="card">
-    <h2><span class="step">2</span>ค่าไฟต่อเดือน</h2>
-    <div class="chips">${[2000, 3000, 3500, 4000, 5000].map((v) => `<button type="button" class="chip" data-action="bill" data-value="${v}">${num(v)}</button>`).join('')}</div>
-    ${range('scenario.billMonthlyThb', 300, 15000, 50, 'บาท/เดือน')}
-    <label>หน่วยไฟจริงจากบิล (kWh/เดือน) <small>— ถ้าทราบ แม่นกว่าคำนวณย้อนจากยอดเงิน</small>
-      <input type="number" inputmode="decimal" min="0" step="1" data-path="scenario.billedKwh" data-type="nullable" placeholder="ไม่ทราบ — คำนวณย้อนจากยอดบิล">
-    </label>
-    <div class="note" data-show="billCheck"></div>
-  </section>
-
-  <section class="card">
-    <h2><span class="step">3</span>ช่วงเวลาที่ใช้ไฟ</h2>
-    <p class="muted">ใช้ไฟช่วง 06:00–17:59 ประมาณกี่ % เช่น เปิดแอร์ทำงานที่บ้านทั้งวัน ≈ 70–80%, ออกไปทำงานกลับมาเปิดแอร์ตอนเย็น ≈ 20–40%</p>
-    <div class="chips">${[0.2, 0.4, 0.6, 0.8].map((v) => `<button type="button" class="chip" data-action="day" data-value="${v}">${v * 100}%</button>`).join('')}</div>
+  <section class="card" id="sec-day">
+    <h2><span class="step">2</span>ใช้ไฟกลางวันมากแค่ไหน</h2>
+    <p class="muted">สัดส่วนไฟที่ใช้ช่วง 06:00–17:59 — สำคัญที่สุดต่อความคุ้ม เพราะแผงผลิตไฟเฉพาะตอนมีแดด</p>
+    <div class="chips">${[
+      [0.2, '20% ออกไปทำงานทั้งวัน'],
+      [0.4, '40%'],
+      [0.6, '60%'],
+      [0.8, '80% อยู่บ้าน/เปิดแอร์กลางวัน'],
+    ]
+      .map(([v, l]) => `<button type="button" class="chip" data-action="day" data-value="${v}">${l}</button>`)
+      .join('')}</div>
     ${range('scenario.dayUseFraction', 0, 100, 5, '% กลางวัน', 100)}
+    <details class="sub" id="meter-calc">
+      <summary>📟 วัดจริงจากเลขมิเตอร์ (แม่นกว่าการเดา)</summary>
+      <p class="small">จดเลขบนมิเตอร์ 3 ครั้ง: <b>06:00</b> → <b>18:00</b> → <b>06:00 วันถัดไป</b> (ทำ 2–3 วันแล้วเฉลี่ยยิ่งดี)</p>
+      <div class="grid3">
+        <label>06:00 <input type="number" inputmode="decimal" data-meter="a" placeholder="เช่น 45210"></label>
+        <label>18:00 <input type="number" inputmode="decimal" data-meter="b" placeholder="45228"></label>
+        <label>06:00 วันถัดไป <input type="number" inputmode="decimal" data-meter="c" placeholder="45240"></label>
+      </div>
+      <div class="row wrap gap"><span id="meter-result" class="muted small">กรอกครบ 3 ค่าเพื่อคำนวณ</span><button type="button" class="btn sm" data-action="meter-apply" disabled>ใช้ค่านี้</button></div>
+    </details>
     <div class="field"><span>รูปแบบการใช้ไฟระหว่างวัน</span></div>
     <div class="shape-list">
       ${LOAD_SHAPES.map(
@@ -102,8 +173,8 @@ export function renderHome(s: AppState): string {
     <div data-show="loadSpark"></div>
   </section>
 
-  <section class="card">
-    <h2><span class="step">4</span>บ้าน & หลังคา (ปรับแล้วเห็นใน 3D)</h2>
+  <section class="card" id="sec-roof">
+    <h2><span class="step">3</span>บ้าน & หลังคา <small class="muted">(เห็นผลในภาพ 3D)</small></h2>
     <div class="grid2">
       <label>ความยาวบ้าน (ตามสันหลังคา) ${range('house.width', 6, 18, 0.5, 'ม.')}</label>
       <label>ความลึกบ้าน ${range('house.depth', 6, 12, 0.5, 'ม.')}</label>
@@ -112,11 +183,12 @@ export function renderHome(s: AppState): string {
         <select data-path="house.floors" data-type="int">${opt(1, '1 ชั้น', s.house.floors)}${opt(2, '2 ชั้น', s.house.floors)}</select>
       </label>
     </div>
-    <label>หลังคาฝั่งที่ติดแผงหันไปทาง
+    <label>หลังคาฝั่งที่จะติดแผงหันไปทาง
       <select data-path="house.bearingDeg" data-type="int">${BEARINGS.map((b) => opt(b.deg, b.label, s.house.bearingDeg)).join('')}</select>
     </label>
+    ${help('วัดหลังคา/ดูทิศยังไง?', `เปิด <b>Google Maps โหมดดาวเทียม</b> → คลิกขวาที่หลังคา → "วัดระยะทาง" วัดความยาว-ความลึกบ้าน และดูว่าหลังคาลาดไปทางทิศไหน (ด้านบนของแผนที่ = ทิศเหนือ) — หันใต้ดีที่สุด ตะวันออก/ตะวันตกได้ ~90% เลี่ยงเงาต้นไม้/ตึกสูง`)}
     <div class="note" data-show="orientation"></div>
-    <label class="check"><input type="checkbox" data-path="autoRoof" data-type="bool"> คำนวณพื้นที่หลังคาจากขนาดบ้าน 3D (ฝั่งเดียว × 80%)</label>
+    <label class="check"><input type="checkbox" data-path="autoRoof" data-type="bool"> คำนวณพื้นที่หลังคาจากขนาดบ้าน (ฝั่งเดียว × 80%)</label>
     <label>พื้นที่หลังคาที่ใช้ได้ (ตร.ม.)
       <input type="number" min="0" step="1" data-path="scenario.roofAreaM2" data-type="nullable" placeholder="ไม่ทราบ">
     </label>
@@ -139,23 +211,45 @@ export function renderHome(s: AppState): string {
     </label>
     <p class="muted small">ค่าคงที่ทั้งหมดเป็นสมมติฐานที่แก้ไขได้ ไม่ใช่ข้อมูลรับประกัน ใช้ PVGIS หรือผลวัดจริงเมื่อต้องการความแม่นยำ</p>
     <button type="button" class="btn ghost" data-action="reset-all">รีเซ็ตค่าทั้งหมด</button>
-  </details>`;
+  </details>
+  <button type="button" class="btn block" data-action="goto" data-tab="results">ดูผล & คำแนะนำ →</button>`;
+}
+
+interface CheckItem {
+  ok: boolean;
+  label: string;
+  hint: string;
+  target: string;
+}
+
+export function completenessItems(s: AppState): CheckItem[] {
+  const hist = (s.scenario.monthlyKwh ?? []).filter((v) => v != null && v > 0).length;
+  return [
+    { ok: s.scenario.billMonthlyThb > 0, label: 'ยอดค่าไฟเฉลี่ย', hint: 'บรรทัด "รวมเงินที่ต้องชำระ" (A)', target: 'sec-bill' },
+    { ok: !!s.scenario.billedKwh || hist >= 3, label: 'จำนวนหน่วย kWh จากบิล', hint: 'ช่อง "จำนวนหน่วย" (B)', target: 'sec-bill' },
+    { ok: hist >= 3, label: `หน่วยย้อนหลัง ≥ 3 เดือน (มี ${hist})`, hint: `แอป ${s.scenario.utility === 'MEA' ? 'MEA Smart Life' : 'PEA Smart Plus'}`, target: 'sec-bill' },
+    { ok: s.scenario.phase !== 0, label: 'ระบบไฟ 1/3 เฟส', hint: 'ดูที่มิเตอร์หน้าบ้าน', target: 'sec-bill' },
+    { ok: s.meta.dayMeasured, label: '% ใช้ไฟกลางวัน (วัดจากมิเตอร์)', hint: 'จดเลขมิเตอร์ 06:00 / 18:00', target: 'sec-day' },
+    { ok: !s.autoRoof || s.scenario.roofSurveyed || s.meta.roofSet, label: 'ขนาด/ทิศหลังคาจริง', hint: 'วัดจาก Google Maps', target: 'sec-roof' },
+  ];
 }
 
 export function homeDynamic(s: AppState, m: Model): Record<string, string> {
   const t = m.ctx.tariff;
   const est = m.ctx.monthlyKwh;
   const bb = billBreakdown(est, t);
-  let billCheck = `ใช้ไฟประมาณ <b>${num(est, 0)} kWh/เดือน</b> ${s.scenario.billedKwh ? '(จากบิลจริง)' : '(คำนวณย้อนจากยอดบิลแบบขั้นบันได + Ft + VAT)'}`;
-  billCheck += `<br>ค่าไฟคำนวณ = ${thb(bb.total)} → ค่าพลังงาน ${thb(bb.energy)} + Ft ${thb(bb.ft)} + ค่าบริการ ${thb(bb.service)} + VAT ${thb(bb.vat)}`;
-  if (s.scenario.billedKwh) billCheck += `<br>ส่วนต่างจากยอดที่กรอก: ${thb(s.scenario.billMonthlyThb - bb.total)}`;
-  billCheck += `<br>หน่วยสุดท้ายที่ลดได้มีค่า ~${num(marginalRate(est, t), 2)} บาท/หน่วย (ขั้นบันไดสูงสุดที่คุณจ่าย)`;
+  const hist = (s.scenario.monthlyKwh ?? []).filter((v) => v != null && v > 0).length;
+  const source = hist >= 3 ? `(เฉลี่ยจากบิล ${hist} เดือน)` : s.scenario.billedKwh ? '(จากบิลจริง)' : '(คำนวณย้อนจากยอดเงิน)';
+  let billCheck = `ใช้ไฟประมาณ <b>${num(est, 0)} kWh/เดือน</b> ${source}`;
+  billCheck += `<br>ตรวจสูตร: ${num(est, 0)} หน่วย = ค่าพลังงาน ${thb(bb.energy)} + Ft ${thb(bb.ft)} + ค่าบริการ ${thb(bb.service)} + VAT ${thb(bb.vat)} = <b>${thb(bb.total)}</b>`;
+  if (s.scenario.billedKwh && hist < 3) billCheck += ` <span class="muted">(ต่างจากยอดที่กรอก ${thb(s.scenario.billMonthlyThb - bb.total)})</span>`;
+  billCheck += `<br>หน่วยสุดท้ายที่ลดได้มีค่า ~<b>${num(marginalRate(est, t), 2)} บาท/หน่วย</b> — นี่คือมูลค่าของไฟ 1 หน่วยที่โซลาร์ช่วยแทน`;
   const fr = hourlyLoadFractions(getLoadShape(s.scenario.loadShape).weights, s.scenario.dayUseFraction);
   const solar = m.ctx.pvPerKwp[s.view.month]!;
   const solarMax = Math.max(...solar) || 1;
   const frMax = Math.max(...fr) || 1;
   const loadSpark = chart({
-    title: 'รูปทรงการใช้ไฟ 24 ชม. เทียบช่วงแดด (สัดส่วน)',
+    title: 'การใช้ไฟ 24 ชม. เทียบช่วงที่แผงผลิตไฟ (สัดส่วน)',
     categories: Array.from({ length: 24 }, (_, h) => `${h}`),
     series: [
       { label: 'การใช้ไฟ', values: fr.map((v) => v / frMax), color: 'var(--c-load)', type: 'bar' },
@@ -166,11 +260,26 @@ export function homeDynamic(s: AppState, m: Model): Record<string, string> {
     labelEvery: 3,
   });
   const issues = m.issues.map((i) => `<div class="issue ${i.level}">${esc(i.message)}</div>`).join('');
+  const items = completenessItems(s);
+  const done = items.filter((i) => i.ok).length;
+  const completeness = `<div class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${items.length}" aria-valuenow="${done}"><i style="width:${(done / items.length) * 100}%"></i></div>
+    <ul class="check-items">${items
+      .map(
+        (i) =>
+          `<li class="${i.ok ? 'ok' : ''}"><span class="ck">${i.ok ? '✓' : '○'}</span><span><b>${esc(i.label)}</b><small>${i.ok ? 'เรียบร้อย' : esc(i.hint)}</small></span>${
+            i.ok ? '' : `<button type="button" class="btn sm ghost" data-action="jump" data-target="${i.target}">กรอก</button>`
+          }</li>`,
+      )
+      .join('')}</ul>
+    <p class="muted small">ความมั่นใจของผลตอนนี้: <b>${esc(m.confidence.label)}</b> — ยิ่งกรอกครบ ตัวเลขยิ่งใกล้ความจริง</p>`;
   return {
     utility: `${s.scenario.utility === 'MEA' ? 'การไฟฟ้านครหลวง (MEA)' : 'การไฟฟ้าส่วนภูมิภาค (PEA)'}`,
     billCheck: billCheck + issues,
     loadSpark,
-    orientation: `ตัวคูณทิศ/ความเอียง ≈ <b>${num(m.orientation, 2)}</b> • พื้นที่หลังคาใช้ได้ ≈ <b>${num(m.roofArea, 0)} ตร.ม.</b> • วางแผงได้สูงสุด ~<b>${m.capacity}</b> แผง (590W)`,
+    completeness,
+    completeScore: badge(`${done}/${items.length}`, done >= 5 ? 'good' : done >= 3 ? 'info' : 'warn'),
+    historyBadge: hist ? badge(`กรอกแล้ว ${hist} เดือน${hist < 3 ? ' (ต้อง ≥3)' : ''}`, hist >= 3 ? 'good' : 'warn') : '',
+    orientation: `ตัวคูณทิศ/ความเอียง ≈ <b>${num(m.orientation, 2)}</b> • พื้นที่หลังคาใช้ได้ ≈ <b>${num(m.roofArea, 0)} ตร.ม.</b> • วางแผง 590W ได้สูงสุด ~<b>${m.capacity}</b> แผง (~${num((m.capacity * 590) / 1000, 1)} kWp)`,
   };
 }
 
@@ -184,7 +293,7 @@ export function offerOptions(s: AppState, m: Model): string {
   return list.join('');
 }
 
-export function renderResults(s: AppState, m: Model): string {
+export function renderResults(s: AppState, m: Model, sw: SweepOutput | null): string {
   const e = m.sel;
   if (!e) return `<section class="card"><p>เลือกแพ็กเกจเพื่อดูผลลัพธ์</p></section>`;
   const sim = e.sim;
@@ -240,21 +349,6 @@ export function renderResults(s: AppState, m: Model): string {
   </table>
   <p class="muted small">ค่าไฟไม่เหลือ 0 เพราะยังต้องซื้อไฟตอนเช้าตรู่ เย็น และกลางคืน + ค่าบริการรายเดือน และไฟส่วนเกินตอนกลางวันไม่ได้หักลบ</p>`;
 
-  const hm = sim.hourly[mi]!;
-  const days = DAYS_IN_MONTH[mi]!;
-  const hourCats = Array.from({ length: 24 }, (_, h) => `${h}:00`);
-  const dayChart = chart({
-    title: `ไฟบ้าน vs ไฟโซลาร์ วันเฉลี่ยของเดือน${MONTH_NAMES_TH[mi]} (kW)`,
-    categories: hourCats,
-    series: [
-      { label: 'บ้านใช้ไฟ', values: hm.load.map((v) => v / days), color: 'var(--c-load)', type: 'bar' },
-      { label: 'โซลาร์ผลิต', values: hm.pv.map((v) => v / days), color: 'var(--c-pv)', type: 'area' },
-      { label: 'ใช้เองจากแผง', values: hm.self.map((v) => v / days), color: 'var(--c-self)', type: 'line' },
-    ],
-    yFormat: (n) => num(n, 1),
-    highlight: Math.floor(s.view.hour),
-    labelEvery: 3,
-  });
   const monthChart = chart({
     title: 'ผลิตไฟ / ใช้เอง รายเดือน (kWh)',
     categories: MONTH_SHORT_TH,
@@ -284,11 +378,10 @@ export function renderResults(s: AppState, m: Model): string {
       })
     : '<p class="muted">ไม่มีราคา All-in จึงยังทำกระแสเงินสดไม่ได้</p>';
 
-  return `${head}
+  return `${renderAdvice(s, m, sw)}${head}
   <section class="card"><div class="kpis">${cards}</div>
     <ul class="explain">${e.explain.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
   </section>
-  <section class="card">${dayChart}<p class="muted small">ลากแถบเวลาใต้ภาพ 3D เพื่อดูการไหลของไฟแต่ละชั่วโมง • เลือกเดือนที่แถบ 12 เดือนด้านล่างของภาพ</p></section>
   <section class="card">${monthChart}${saveChart}</section>
   <section class="card">${billTable}</section>
   <section class="card">${cf}</section>
@@ -297,6 +390,187 @@ export function renderResults(s: AppState, m: Model): string {
     <button type="button" class="btn ghost" data-action="print">พิมพ์สรุป</button>
     <button type="button" class="btn ghost" data-action="share">คัดลอกลิงก์แชร์</button>
   </section>`;
+}
+
+/** ขนาดที่คืนทุนเร็วสุด (ที่หลังคารองรับ) จาก sweep ในแถวที่ใกล้ % กลางวันปัจจุบันที่สุด */
+export function bestSweepSize(s: AppState, m: Model, sw: SweepOutput | null): { kwp: number; payback: number; selfShare: number } | null {
+  if (!sw) return null;
+  const nS = sw.sizes.length;
+  const d = sw.dayFractions.reduce((best, f, i) => (Math.abs(f - s.scenario.dayUseFraction) < Math.abs(sw.dayFractions[best]! - s.scenario.dayUseFraction) ? i : best), 0);
+  let out: { kwp: number; payback: number; selfShare: number } | null = null;
+  sw.sizes.forEach((kwp, si) => {
+    const i = d * nS + si;
+    const net = sw.grossSaving[i]! - 1500;
+    if (net <= 0) return;
+    if (m.roofArea != null && kwp * s.assumptions.areaPerKwp > m.roofArea) return;
+    const pb = estimateCapex(m.rec.priceModel, kwp) / net;
+    if (!out || pb < out.payback) out = { kwp, payback: pb, selfShare: sw.selfUseKwh[i]! / (sw.pvKwh[i]! || 1) };
+  });
+  return out;
+}
+
+/** การ์ดสรุป "ควรติดไหม / ติดเท่าไร / ทำอะไรต่อ" */
+export function renderAdvice(s: AppState, m: Model, sw: SweepOutput | null): string {
+  const top = m.rec.top;
+  const best = bestSweepSize(s, m, sw);
+  const sim = top?.sim;
+  const pb = top?.payback ?? null;
+  let verdict: string;
+  let tone: string;
+  if (pb == null) {
+    verdict = 'ยังสรุปไม่ได้ — ยังไม่มีแพ็กเกจที่เข้าเงื่อนไข (ดูเหตุผลในแท็บผู้ติดตั้ง)';
+    tone = 'warn';
+  } else if (pb <= 7) {
+    verdict = `คุ้มค่าที่จะติด — คืนทุนประมาณ ${num(pb, 1)} ปี จากอายุแผง 25 ปี`;
+    tone = 'good';
+  } else if (pb <= 10) {
+    verdict = `พอคุ้ม — คืนทุนประมาณ ${num(pb, 1)} ปี ลองเพิ่มการใช้ไฟกลางวันหรือหาราคาที่ถูกลง`;
+    tone = 'info';
+  } else {
+    verdict = `ยังไม่ค่อยคุ้ม — คืนทุน ${num(pb, 1)} ปี ส่วนใหญ่เพราะใช้ไฟกลางวันน้อยหรือค่าไฟยังไม่สูงพอ`;
+    tone = 'warn';
+  }
+  const dayPct = s.scenario.dayUseFraction * 100;
+  const steps: string[] = [];
+  const hist = (s.scenario.monthlyKwh ?? []).filter((v) => v != null && v > 0).length;
+  if (hist < 3 && !s.scenario.billedKwh) steps.push(`กรอก <b>จำนวนหน่วย (kWh)</b> จากบิล หรือย้อนหลัง 3–12 เดือน ให้ตัวเลขแม่นขึ้น <button type="button" class="link" data-action="jump" data-target="sec-bill">ไปกรอก</button>`);
+  if (!s.meta.dayMeasured) steps.push(`วัด <b>% ใช้ไฟกลางวัน</b> จากเลขมิเตอร์ (ตอนนี้ใช้ค่า ${num(dayPct)}%) <button type="button" class="link" data-action="jump" data-target="meter-calc">วิธีวัด</button>`);
+  steps.push(`ขอใบเสนอราคา <b>2–3 เจ้า</b> ที่ระบุจำนวนแผง × วัตต์ (DC kWp), ยี่ห้ออินเวอร์เตอร์ และราคารวม VAT <button type="button" class="link" data-action="goto" data-tab="installers">ดูผู้ติดตั้ง</button>`);
+  steps.push('ให้ช่างสำรวจหลังคา เงา และตู้ไฟจริง แล้วนำราคามากรอกเป็น "ใบเสนอราคายืนยันแล้ว" เพื่อเทียบแบบยุติธรรม');
+  return `<section class="card advice ${tone}">
+    <p class="eyebrow-sm">คำแนะนำสำหรับบ้านคุณ</p>
+    <h2 class="verdict">${esc(verdict)}</h2>
+    ${
+      top && sim
+        ? `<div class="advice-grid">
+        <div><span>แพ็กเกจที่เหมาะตอนนี้</span><b>${esc(top.installer?.name ?? '')} ${esc(top.offer.packageName)}</b><small>${num(top.offer.solarDcKwp, 2)} kWp • ${thb(top.capex.capex)}</small></div>
+        <div><span>ค่าไฟต่อเดือน</span><b>${thb(sim.annual.billBefore / 12)} → ${thb(sim.annual.billAfter / 12)}</b><small>ประหยัดสุทธิ ${thb(top.annualNet)}/ปี</small></div>
+        ${best ? `<div><span>ขนาดที่คืนทุนเร็วสุด (ราคาตลาด)</span><b>~${num(best.kwp, 1)} kWp</b><small>~${Math.ceil((best.kwp * 1000) / 590)} แผง 590W • คืนทุน ~${num(best.payback, 1)} ปี</small></div>` : ''}
+      </div>
+      <p class="small">☀️ กลางวันแผงช่วยจ่ายไฟได้มาก แต่ 🌙 กลางคืนยังต้องซื้อจากการไฟฟ้าทั้งหมด <button type="button" class="link" data-action="goto" data-tab="daynight">ดูแยกกลางวัน/กลางคืน →</button></p>`
+        : ''
+    }
+    ${
+      top && m.sel && m.sel.offer.id !== top.offer.id
+        ? `<p class="issue warning">ตอนนี้กำลังแสดง <b>${esc(m.sel.installer?.name ?? '')} ${esc(m.sel.offer.packageName)}</b>${m.sel.payback != null ? ` (คืนทุน ${num(m.sel.payback, 1)} ปี)` : ''} ที่คุณเลือกเอง ไม่ใช่แพ็กเกจที่แนะนำ <button type="button" class="link" data-action="use-top">กลับไปใช้แพ็กเกจที่แนะนำ</button></p>`
+        : ''
+    }
+    <h3 class="list-title">ขั้นต่อไป</h3>
+    <ol class="next-steps">${steps.map((x) => `<li>${x}</li>`).join('')}</ol>
+    ${top && !m.rec.topIsConfirmed ? '<p class="muted small">* อันดับนี้ใช้ "ราคาประกาศ" จากเว็บผู้ขาย ยังไม่ใช่ใบเสนอราคาจริง</p>' : ''}
+  </section>`;
+}
+
+/* ---------------------------------------------------------------- กลางวัน / กลางคืน */
+export function renderDayNight(s: AppState, m: Model): string {
+  const e = m.sel;
+  const sim = e?.sim;
+  const dn = m.dn;
+  if (!e || !sim || !dn) return `<section class="card"><p>เลือกแพ็กเกจ On-grid ในแท็บ "ผล & คำแนะนำ" เพื่อดูการแยกกลางวัน/กลางคืน</p></section>`;
+  const total = dn.dayLoad + dn.nightLoad || 1;
+  const dayCov = dn.dayLoad > 0 ? dn.daySelf / dn.dayLoad : 0;
+  const bar = (solar: number, grid: number) => {
+    const t = solar + grid || 1;
+    return `<div class="stack" aria-hidden="true"><i class="solar" style="width:${(solar / t) * 100}%"></i><i class="grid" style="width:${(grid / t) * 100}%"></i></div>`;
+  };
+  const tiles = `<div class="dn-tiles">
+    <div class="dn-tile day">
+      <span>☀️ กลางวัน 06:00–17:59</span>
+      <b>${num(dn.dayLoad)} <small>kWh/ปี</small></b>
+      <small>${pct(dn.dayLoad / total)} ของไฟทั้งบ้าน</small>
+      ${bar(dn.daySelf, dn.dayImport)}
+      <p>แผงจ่ายแทนได้ <b>${pct(dayCov)}</b> (${num(dn.daySelf)} kWh) ยังซื้อ ${num(dn.dayImport)} kWh</p>
+    </div>
+    <div class="dn-tile night">
+      <span>🌙 กลางคืน 18:00–05:59</span>
+      <b>${num(dn.nightLoad)} <small>kWh/ปี</small></b>
+      <small>${pct(dn.nightLoad / total)} ของไฟทั้งบ้าน</small>
+      ${bar(0, dn.nightImport)}
+      <p>แผงช่วยไม่ได้ ต้องซื้อทั้งหมด ≈ <b>${thb(dn.nightCostThb)}/ปี</b></p>
+    </div>
+  </div>
+  <div class="legend"><span class="lg"><i style="background:var(--c-self)"></i>ไฟจากแผง</span><span class="lg"><i style="background:var(--c-grid)"></i>ซื้อจากการไฟฟ้า</span></div>
+  ${dn.export > 1 ? `<p class="small muted">ไฟจากแผงที่เหลือใช้กลางวัน ${num(dn.export)} kWh/ปี ไหลออกสายส่งโดยไม่มีรายได้ (เว้นแต่ได้สัญญารับซื้อ)</p>` : ''}`;
+
+  const mi = s.view.month;
+  const hm = sim.hourly[mi]!;
+  const days = DAYS_IN_MONTH[mi]!;
+  const dayChart = chart({
+    title: `วันเฉลี่ยของเดือน${MONTH_NAMES_TH[mi]}: ไฟบ้าน vs ไฟโซลาร์ (kW)`,
+    categories: Array.from({ length: 24 }, (_, h) => `${h}:00`),
+    series: [
+      { label: 'บ้านใช้ไฟ', values: hm.load.map((v) => v / days), color: 'var(--c-load)', type: 'bar' },
+      { label: 'โซลาร์ผลิต', values: hm.pv.map((v) => v / days), color: 'var(--c-pv)', type: 'area' },
+      { label: 'ใช้ได้จริงจากแผง', values: hm.self.map((v) => v / days), color: 'var(--c-self)', type: 'line' },
+    ],
+    yFormat: (n) => num(n, 1),
+    highlight: Math.floor(s.view.hour),
+    labelEvery: 3,
+  });
+
+  let shiftHtml = '';
+  if (m.shift && m.shift.length) {
+    const cur = m.shift.find((r) => Math.abs(r.dayFraction - s.scenario.dayUseFraction) < 1e-9) ?? m.shift[0]!;
+    const rows = m.shift
+      .filter((r, i, arr) => arr.findIndex((x) => Math.abs(x.dayFraction - r.dayFraction) < 1e-9) === i)
+      .sort((a, b) => a.dayFraction - b.dayFraction);
+    const capex = e.capex.capex;
+    const more = rows.find((r) => r.dayFraction >= Math.min(0.9, cur.dayFraction + 0.2) - 1e-9);
+    const gain = more ? more.grossSaving - cur.grossSaving : 0;
+    let concl: string;
+    if (!more || more === cur) concl = 'คุณใช้ไฟกลางวันสูงอยู่แล้ว การย้ายเพิ่มช่วยได้ไม่มาก';
+    else if (gain > 1500)
+      concl = `ถ้าย้ายการใช้ไฟมากลางวันเพิ่มเป็น ${pct(more.dayFraction)} จะประหยัดเพิ่ม ~<b>${thb(gain)}/ปี</b>${
+        capex && e.annualNet ? ` และคืนทุนเร็วขึ้นจาก ${num(capex / e.annualNet, 1)} → ${num(capex / (e.annualNet + gain), 1)} ปี` : ''
+      } โดยไม่ต้องลงทุนเพิ่ม`;
+    else concl = `ย้ายเพิ่มเป็น ${pct(more.dayFraction)} ได้เพิ่มเพียง ~${thb(gain)}/ปี เพราะแผงขนาดนี้ผลิตไม่พอรองรับโหลดกลางวันที่เพิ่ม — ถ้าจะย้ายการใช้ไฟมากลางวันมาก ๆ อาจคุ้มกับแผงที่ใหญ่ขึ้น`;
+    const table = `<table class="tbl">
+      <caption>แผงเดิม ${num(e.offer.solarDcKwp, 2)} kWp • ไฟทั้งเดือนเท่าเดิม เปลี่ยนแค่ช่วงเวลาที่ใช้</caption>
+      <thead><tr><th>ใช้ไฟกลางวัน</th><th>ประหยัด/ปี</th><th>เทียบตอนนี้</th><th>แผงแทนไฟได้</th></tr></thead>
+      <tbody>${rows
+        .map((r) => {
+          const isCur = r === cur || Math.abs(r.dayFraction - cur.dayFraction) < 1e-9;
+          const d = r.grossSaving - cur.grossSaving;
+          return `<tr class="${isCur ? 'cur' : ''}"><th>${pct(r.dayFraction)}${isCur ? ' (ตอนนี้)' : ''}</th><td>${thb(r.grossSaving)}</td><td class="${d > 0 ? 'pos' : d < 0 ? 'neg' : ''}">${isCur ? '–' : `${d > 0 ? '+' : ''}${num(d)}`}</td><td>${pct(r.coverage)}</td></tr>`;
+        })
+        .join('')}</tbody></table>`;
+    shiftHtml = `<section class="card">
+      <h2>ย้ายการใช้ไฟมาตอนกลางวัน ประหยัดขึ้นไหม?</h2>
+      <p class="muted small">คิดจากแพ็กเกจ ${esc(e.installer?.name ?? '')} ${esc(e.offer.packageName)} (${num(e.offer.solarDcKwp, 2)} kWp)</p>
+      <p class="answer">${concl}</p>
+      ${chart({
+        title: 'เงินประหยัดต่อปี ตาม % การใช้ไฟกลางวัน (บาท)',
+        categories: rows.map((r) => pct(r.dayFraction)),
+        series: [{ label: 'ประหยัด/ปี', values: rows.map((r) => r.grossSaving), color: 'var(--c-money)', type: 'bar' }],
+        highlight: rows.indexOf(cur),
+        height: 170,
+      })}
+      <div class="tbl-wrap">${table}</div>
+    </section>`;
+  }
+
+  const tips: [string, string, string][] = [
+    ['🧺', 'เครื่องซักผ้า / อบผ้า', 'ตั้งเวลาให้ทำงาน 10:00–14:00 (ครั้งละ ~0.5–3 kWh)'],
+    ['💧', 'ปั๊มน้ำ / เติมแท็งก์', 'ให้ทำงานช่วงสาย — แท็งก์เป็น "แบตเตอรี่น้ำ" ไว้ใช้ตอนเย็น'],
+    ['❄️', 'แอร์ (Pre-cool)', 'เปิดลดอุณหภูมิห้องช่วง 15:00–17:30 ก่อนแดดหมด ตอนค่ำแอร์จะทำงานเบาลง'],
+    ['🚗', 'ชาร์จรถไฟฟ้า', 'ชาร์จกลางวันวันหยุดหรือ WFH ใช้ไฟจากแผงได้เต็มที่ (ชาร์จ 7 kW ต่อชั่วโมง ≈ 7 kWh)'],
+    ['🍽️', 'เครื่องล้างจาน / หม้อหุงข้าวตั้งเวลา', 'ตั้งเวลาให้ทำงานช่วงเที่ยง'],
+    ['🔌', 'Smart plug / timer', 'ราคาไม่กี่ร้อยบาท ช่วยย้ายการใช้ไฟได้โดยไม่ต้องจำ'],
+  ];
+  return `<section class="card">
+      <h2>ไฟบ้านคุณ: กลางวัน vs กลางคืน</h2>
+      ${tiles}
+    </section>
+    ${shiftHtml}
+    <section class="card">${dayChart}<p class="muted small">พื้นที่สีส้มเกินแท่งสีน้ำเงิน = ไฟเหลือ • แท่งสีน้ำเงินนอกพื้นที่สีส้ม = ต้องซื้อ — ลากแถบเวลาใต้ภาพ 3D เพื่อดูทีละชั่วโมง</p></section>
+    <section class="card">
+      <h2>ย้ายอะไรไปใช้ตอนกลางวันได้บ้าง</h2>
+      <ul class="tips">${tips.map(([i, t, d]) => `<li><span class="ti">${i}</span><span><b>${t}</b><small>${d}</small></span></li>`).join('')}</ul>
+    </section>
+    <section class="card">
+      <h2>🌙 อยากลดค่าไฟกลางคืนด้วย?</h2>
+      <p>ไฟกลางคืนที่ยังต้องซื้อ ~<b>${num(dn.nightImport)} kWh/ปี</b> (≈ ${thb(dn.nightCostThb)}) ลดได้ด้วย<b>แบตเตอรี่ (ระบบ Hybrid)</b> ที่เก็บไฟเหลือตอนกลางวันไว้ใช้กลางคืน แต่ปัจจุบันแบตเตอรี่ยังราคาสูง ต้องจำลองการชาร์จ/คายประจุละเอียด แอปนี้จึง<b>ไม่คำนวณความคุ้มของแบต</b> — ให้ขอผู้ขายแสดงตัวเลขการชาร์จ-ใช้จริงประกอบ</p>
+    </section>`;
 }
 
 /* ---------------------------------------------------------------- ผู้ติดตั้ง */

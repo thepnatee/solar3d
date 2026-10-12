@@ -16,7 +16,10 @@ import {
   SWEEP_DAY_FRACTIONS,
   SWEEP_SIZES,
   buildContext,
+  compareDayFractions,
   confidenceLabel,
+  dayFractionFromMeter,
+  dayNightSplit,
   estimateCapex,
   evaluateOffer,
   getLoadShape,
@@ -30,13 +33,13 @@ import {
 } from './engine';
 import { sweep, useSharedDevice } from './gpu/gpu-sweep';
 import { SolarScene, panelCapacity, usableRoofArea } from './scene/scene';
-import { MONTH_WEATHER, WEATHER, WEATHER_IDS, type WeatherId } from './scene/weather-model';
 import { blankOffer, editorHtml, readEditor } from './ui/editor';
-import { esc, hhmm, num, thb } from './ui/format';
-import { defaultState, loadState, resetOffers, shareUrl, type AppState, type TabId } from './ui/state';
-import { homeDynamic, renderHome, renderInstallers, renderLearn, renderResults, renderSize, type Model } from './ui/views';
+import { esc, hhmm, num, pct, thb } from './ui/format';
+import { clearSaved, defaultState, loadState, resetOffers, saveState, shareUrl, type AppState, type TabId } from './ui/state';
+import { homeDynamic, renderDayNight, renderHome, renderInstallers, renderLearn, renderResults, renderSize, type Model } from './ui/views';
 
-const state: AppState = loadState();
+const loaded = loadState();
+const state: AppState = loaded.state;
 let model: Model;
 let sweepOut: SweepOutput | null = null;
 let sweepVerify = '';
@@ -83,6 +86,7 @@ function compute(): void {
   const ctx = buildContext(s.scenario, assumptions);
   const rec = recommend(s.offers, s.installers, ctx, today(), s.weights);
 
+  if (!s.meta.pickedOffer && rec.top) s.selected = rec.top.offer.id;
   let sel = rec.evaluations.find((e) => e.offer.id === s.selected) ?? null;
   const selIsCustom = s.selected.startsWith('CUSTOM:');
   if (selIsCustom) {
@@ -109,7 +113,26 @@ function compute(): void {
     orientation,
     panelCount,
     capacity: panelCapacity(s.house).capacity,
+    dn: sel?.sim ? dayNightSplit(sel.sim, ctx.tariff) : null,
+    shift: sel?.sim
+      ? compareDayFractions(s.scenario, assumptions, sel.offer.solarDcKwp, [...new Set([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, s.scenario.dayUseFraction])])
+      : null,
   };
+  scheduleSave();
+}
+
+/* ------------------------------------------------------------ localStorage (เฉพาะเครื่องนี้) */
+let saveTimer = 0;
+function scheduleSave(): void {
+  clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => setSaveStatus(saveState(state)), 400);
+}
+function setSaveStatus(savedAt: string | null): void {
+  const el = document.querySelector('#save-text');
+  if (!el) return;
+  el.textContent = savedAt
+    ? `บันทึกในเครื่องนี้ ${new Date(savedAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`
+    : 'บันทึกไม่ได้ (โหมดส่วนตัว?)';
 }
 
 /* ------------------------------------------------------------ GPU sweep (debounced) */
@@ -122,7 +145,7 @@ function scheduleSweep(): void {
     const input: SweepInput = {
       monthlyKwh: model.ctx.monthlyKwh,
       loadWeights: getLoadShape(state.scenario.loadShape).weights,
-      monthlyLoadFactors: state.assumptions.monthlyLoadFactors,
+      monthlyLoadFactors: model.ctx.monthlyLoadFactors,
       pvPerKwp: model.ctx.pvPerKwp,
       tariff: model.ctx.tariff,
       sizes: SWEEP_SIZES,
@@ -144,7 +167,7 @@ function scheduleSweep(): void {
     } else {
       sweepVerify = '';
     }
-    if (state.tab === 'size') renderTab();
+    if (state.tab === 'size' || state.tab === 'results') renderTab();
   }, 120);
 }
 
@@ -184,7 +207,10 @@ function renderTab(): void {
       panel.innerHTML = renderHome(state);
       break;
     case 'results':
-      panel.innerHTML = renderResults(state, model);
+      panel.innerHTML = renderResults(state, model, sweepOut);
+      break;
+    case 'daynight':
+      panel.innerHTML = renderDayNight(state, model);
       break;
     case 'installers':
       panel.innerHTML = renderInstallers(state, model);
@@ -203,20 +229,18 @@ function renderTab(): void {
 function renderSummaryBar(): void {
   const e = model.sel;
   const a = e?.sim?.annual;
-  $('#sum-bill').textContent = a ? `${thb(a.billBefore / 12)} → ${thb(a.billAfter / 12)}` : '–';
+  $('#sum-bill').textContent = a ? `${num(a.billBefore / 12)} → ${thb(a.billAfter / 12)}` : '–';
   $('#sum-save').textContent = e?.annualNet != null ? `${thb(e.annualNet)}/ปี` : '–';
   $('#sum-payback').textContent = e?.payback != null ? `${num(e.payback, 1)} ปี` : 'ยังคำนวณไม่ได้';
   $('#sum-capex').textContent = e?.capex.capex != null ? thb(e.capex.capex) : 'VAT?';
   const o = e?.offer;
   const over = model.panelCount > model.capacity;
-  $('#hero-pkg').innerHTML = o
-    ? `<span>🔆 ${esc(e?.installer?.name ?? '')} ${esc(o.packageName)}</span><span>• ${model.panelCount} แผง ${num(o.solarDcKwp, 2)} kWp</span>${
-        e?.payback != null ? `<span>• คืนทุน ${num(e.payback, 1)} ปี</span>` : ''
-      }${over ? `<span class="warn">หลังคาฝั่งนี้วางได้ ${model.capacity} แผง — ต้องใช้ฝั่งอื่นหรือลดขนาด</span>` : ''}`
+  $('#live-pkg').innerHTML = o
+    ? `<b>${esc(e?.installer?.name ?? '')} ${esc(o.packageName)}</b><span>${model.panelCount} แผง • ${num(o.solarDcKwp, 2)} kWp${e?.payback != null ? ` • คืนทุน ${num(e.payback, 1)} ปี` : ''}</span>${
+        over ? `<span class="warn">หลังคาฝั่งนี้วางได้ ${model.capacity} แผง — ต้องใช้ฝั่งอื่นหรือลดขนาด</span>` : ''
+      }`
     : '';
   renderMonths();
-  const ps = document.querySelector<HTMLSelectElement>('#prov-select');
-  if (ps && ps.value !== state.scenario.province) ps.value = state.scenario.province;
 }
 
 function updateScene(): void {
@@ -224,45 +248,46 @@ function updateScene(): void {
   const m = state.view.month;
   const h = Math.min(23, Math.floor(state.view.hour));
   const days = DAYS_IN_MONTH[m]!;
-  const wx = WEATHER[state.view.weather];
   const hm = e?.sim?.hourly[m];
-  // ภาพสด: วันเฉลี่ยของเดือน × ตัวคูณสภาพอากาศ (ผลรายปียังใช้ค่าเฉลี่ยตาม engine)
-  const pv = hm ? (hm.pv[h]! / days) * wx.pv : 0;
+  // วันเฉลี่ยของเดือน (ค่าเดียวกับที่ใช้คำนวณรายปี)
+  const pv = hm ? hm.pv[h]! / days : 0;
   const load = (model.ctx.load[m]![h] ?? 0) / days;
   const self = Math.min(pv, load);
   const flows = { pv, self, import: Math.max(0, load - self), export: Math.max(0, pv - self) };
   const peak = hm ? Math.max(...hm.pv) / days : 1;
   const lat = PROVINCES.find((p) => p.name === state.scenario.province)?.lat ?? 13.86;
-  scene?.update({ house: state.house, panelCount: model.panelCount, lat, month: m, hour: state.view.hour, flows, flowScale: Math.max(peak, 1), weather: state.view.weather });
+  scene?.update({ house: state.house, panelCount: model.panelCount, lat, month: m, hour: state.view.hour, flows, flowScale: Math.max(peak, 1) });
 
-  const night = state.view.hour < 6 || state.view.hour >= 18.5;
-  document.body.classList.toggle('night', night);
+  const isDay = h >= 6 && h < 18;
   $('#hud-time').textContent = `${hhmm(state.view.hour)} น. • ${MONTH_NAMES_TH[m]}`;
-  $('#hero-loc').textContent = `${state.scenario.province} • ${hhmm(state.view.hour)} น. • ${MONTH_NAMES_TH[m]}`;
-  $('#hero-kw').textContent = num(pv, 2);
-  $('#hero-cond').textContent = night ? '🌙 กลางคืน • แผงพัก' : `${wx.icon} ${wx.label}`;
-  let desc: string;
-  if (pv < 0.01) desc = `ไม่มีแดด บ้านใช้ไฟจากการไฟฟ้า ${num(load, 2)} kW — อยากใช้ไฟจากแดดตอนกลางคืนต้องมีแบตเตอรี่`;
-  else if (flows.export > 0.005) desc = `${wx.desc} ผลิตเกินที่บ้านใช้ ${num(flows.export, 2)} kW (ไฟส่วนเกินคิดรายได้ 0 บาท)`;
-  else desc = `${wx.desc} แผงจ่ายไฟให้บ้าน ${num(load > 0 ? (self / load) * 100 : 0)}% ของที่ใช้อยู่`;
-  $('#hero-desc').textContent = desc;
-  $('#flow-load').textContent = `${num(load, 2)} kW`;
-  $('#flow-self').textContent = `${num(flows.self, 2)} kW`;
+  $('#live-when').textContent = `${hhmm(state.view.hour)} น. • ${MONTH_NAMES_TH[m]} (วันเฉลี่ย)`;
+  const period = $('#live-period');
+  period.textContent = isDay ? '☀️ ช่วงกลางวัน' : '🌙 ช่วงกลางคืน';
+  period.className = `badge ${isDay ? 'warn' : 'info'}`;
+  $('#live-pv').textContent = num(pv, 2);
+  $('#live-load').textContent = num(load, 2);
+  $('#live-self').textContent = `${num(self, 2)} kW (${pct(load > 0 ? self / load : 0)})`;
   const exporting = flows.import <= 0.005 && flows.export > 0.005;
-  $('#flow-grid').textContent = `${num(exporting ? flows.export : flows.import, 2)} kW`;
-  $('#flow-grid-label').textContent = exporting ? 'ไฟเหลือ (ไหลออก)' : 'ซื้อจากการไฟฟ้า';
-  $('#flow-grid-row').dataset.dir = exporting ? 'export' : 'import';
-  document.querySelectorAll<HTMLButtonElement>('.wx').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.wx === state.view.weather)));
+  $('#live-grid-label').textContent = exporting ? '↗ ไฟเหลือไหลออก (ไม่มีรายได้)' : '🔌 ซื้อจากการไฟฟ้า';
+  $('#live-grid').textContent = `${num(exporting ? flows.export : flows.import, 2)} kW`;
+  $('#live-grid-row').dataset.dir = exporting ? 'export' : 'import';
+  let note: string;
+  if (pv < 0.01) note = 'ไม่มีแดด — ไฟทั้งหมดซื้อจากการไฟฟ้า ส่วนนี้ลดได้ด้วยการย้ายไปใช้กลางวัน หรือแบตเตอรี่';
+  else if (exporting) note = 'แผงผลิตเกินที่บ้านใช้ — เหมาะกับการเปิดเครื่องซักผ้า ปั๊มน้ำ หรือชาร์จรถตอนนี้';
+  else note = `แผงจ่ายไฟให้บ้าน ${pct(load > 0 ? self / load : 0)} ของที่ใช้อยู่ ส่วนที่เหลือซื้อจากการไฟฟ้า`;
+  $('#live-note').textContent = note;
+  document.querySelectorAll<HTMLButtonElement>('.quick-times button').forEach((b) => b.classList.toggle('on', Number(b.dataset.hour) === state.view.hour));
   const hourEl = $<HTMLInputElement>('#hour');
   if (document.activeElement !== hourEl) hourEl.value = String(state.view.hour);
 }
 
-/** แถบ 12 เดือน (แบบพยากรณ์อากาศ): ผลิตไฟรายเดือนของแพ็กเกจที่เลือก */
+/** แถบ 12 เดือน: kWh ที่แผงผลิตในแต่ละเดือนของแพ็กเกจที่เลือก */
 function renderMonths(): void {
   const sim = model.sel?.sim;
+  const max = sim ? Math.max(...sim.months.map((x) => x.pvKwh)) : 1;
   $('#months').innerHTML = MONTH_SHORT_TH.map((n, i) => {
     const kwh = sim ? sim.months[i]!.pvKwh : 0;
-    return `<button type="button" class="mo" role="tab" data-month="${i}" aria-selected="${i === state.view.month}" title="${MONTH_NAMES_TH[i]}: ผลิต ~${num(kwh)} kWh, ประหยัด ~${sim ? num(sim.months[i]!.grossSaving) : 0} บาท"><span class="n">${n}</span><span class="i">${WEATHER[MONTH_WEATHER[i]!].icon}</span><strong>${sim ? num(kwh) : '–'}</strong><small>kWh</small></button>`;
+    return `<button type="button" class="mo" role="tab" data-month="${i}" aria-selected="${i === state.view.month}" title="${MONTH_NAMES_TH[i]}: ผลิต ~${num(kwh)} kWh, ประหยัด ~${sim ? num(sim.months[i]!.grossSaving) : 0} บาท"><span class="n">${n}</span><span class="bar"><i style="height:${sim ? Math.max(8, (kwh / max) * 100) : 0}%"></i></span><strong>${sim ? num(kwh) : '–'}</strong></button>`;
   }).join('');
 }
 
@@ -278,6 +303,7 @@ function refresh(opts: { tab?: boolean } = {}): void {
 /* ------------------------------------------------------------ events */
 panel.addEventListener('input', (ev) => {
   const el = ev.target as HTMLInputElement | HTMLSelectElement;
+  if (el.dataset.meter) return meterPreview();
   const path = el.dataset.path;
   if (!path) return;
   const type = el.dataset.type;
@@ -290,6 +316,8 @@ panel.addEventListener('input', (ev) => {
   else v = el.value;
   if (typeof v === 'number' && !Number.isFinite(v)) return;
   if (path === 'scenario.roofAreaM2') state.autoRoof = false;
+  if (path.startsWith('house.') || path === 'scenario.roofAreaM2') state.meta.roofSet = true;
+  state.meta.visited = true;
   setPath(path, v);
   refresh({ tab: path.startsWith('weights.') ? false : undefined });
 });
@@ -298,6 +326,7 @@ panel.addEventListener('change', (ev) => {
   const el = ev.target as HTMLSelectElement;
   if (el.dataset.action === 'select-offer') {
     state.selected = el.value;
+    state.meta.pickedOffer = true;
     refresh();
   }
   // re-render weights results once the user lets go of the slider
@@ -310,22 +339,27 @@ panel.addEventListener('click', (ev) => {
   const a = btn.dataset.action;
   switch (a) {
     case 'bill':
+      state.meta.visited = true;
       state.scenario.billMonthlyThb = Number(btn.dataset.value);
       refresh();
       break;
     case 'day':
       state.scenario.dayUseFraction = Number(btn.dataset.value);
+      state.meta.dayMeasured = false;
+      state.meta.visited = true;
       refresh();
       break;
     case 'view-offer':
       state.selected = btn.dataset.id!;
+      state.meta.pickedOffer = true;
       refresh({ tab: true });
-      document.querySelector('.stage')?.scrollIntoView({ behavior: 'smooth' });
+      showStageOnMobile();
       break;
     case 'custom-size':
       state.selected = `CUSTOM:${btn.dataset.kwp}`;
+      state.meta.pickedOffer = true;
       refresh({ tab: true });
-      document.querySelector('.stage')?.scrollIntoView({ behavior: 'smooth' });
+      showStageOnMobile();
       break;
     case 'edit-offer':
       openEditor(state.offers.find((o) => o.id === btn.dataset.id) ?? null);
@@ -342,10 +376,35 @@ panel.addEventListener('click', (ev) => {
     case 'reset-all':
       if (confirm('รีเซ็ตค่าบ้าน ค่าไฟ และสมมติฐานทั้งหมด?')) {
         const d = defaultState();
-        Object.assign(state, { scenario: d.scenario, assumptions: d.assumptions, house: d.house, autoRoof: true, weights: d.weights });
+        Object.assign(state, { scenario: d.scenario, assumptions: d.assumptions, house: d.house, autoRoof: true, weights: d.weights, meta: { ...d.meta, visited: true } });
         refresh({ tab: true });
       }
       break;
+    case 'use-top':
+      state.meta.pickedOffer = false;
+      refresh({ tab: true });
+      break;
+    case 'goto':
+      gotoTab(btn.dataset.tab as TabId);
+      break;
+    case 'jump':
+      jumpTo(btn.dataset.target!);
+      break;
+    case 'clear-history':
+      state.scenario.monthlyKwh = Array<number | null>(12).fill(null);
+      refresh({ tab: true });
+      break;
+    case 'meter-apply': {
+      const f = meterValue();
+      if (f != null) {
+        state.scenario.dayUseFraction = Math.round(f * 100) / 100;
+        state.meta.dayMeasured = true;
+        state.meta.visited = true;
+        refresh({ tab: true });
+        toast(`ตั้งค่าใช้ไฟกลางวัน = ${pct(f)} จากเลขมิเตอร์แล้ว`);
+      }
+      break;
+    }
     case 'csv':
       downloadCsv();
       break;
@@ -358,13 +417,57 @@ panel.addEventListener('click', (ev) => {
   }
 });
 
-document.querySelectorAll<HTMLButtonElement>('.tabs button').forEach((b) =>
-  b.addEventListener('click', () => {
-    state.tab = b.dataset.tab as TabId;
-    panel.scrollTop = 0;
+function gotoTab(tab: TabId): void {
+  state.tab = tab;
+  panel.scrollTop = 0;
+  renderTab();
+  if (window.innerWidth <= 900) $('.tabs').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** เลื่อนไปยังช่องที่ต้องกรอก (สลับไปแท็บกรอกข้อมูลก่อนถ้าจำเป็น) */
+function jumpTo(id: string): void {
+  if (state.tab !== 'home') {
+    state.tab = 'home';
     renderTab();
-  }),
-);
+  }
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (el instanceof HTMLDetailsElement) el.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1600);
+  el.querySelector<HTMLElement>('input:not([type=hidden]),select')?.focus({ preventScroll: true });
+}
+
+function showStageOnMobile(): void {
+  if (window.innerWidth <= 900) $('#stage').scrollIntoView({ behavior: 'smooth' });
+}
+
+function meterValue(): number | null {
+  const get = (k: string) => Number(panel.querySelector<HTMLInputElement>(`[data-meter="${k}"]`)?.value || NaN);
+  return dayFractionFromMeter(get('a'), get('b'), get('c'));
+}
+
+function meterPreview(): void {
+  const f = meterValue();
+  const out = panel.querySelector('#meter-result');
+  const btn = panel.querySelector<HTMLButtonElement>('[data-action="meter-apply"]');
+  if (out) out.innerHTML = f == null ? 'กรอกครบ 3 ค่า (เลขต้องเพิ่มขึ้นตามเวลา)' : `ใช้ไฟกลางวัน <b>${pct(f)}</b> กลางคืน ${pct(1 - f)}`;
+  if (btn) btn.disabled = f == null;
+}
+
+document.querySelectorAll<HTMLButtonElement>('.tabs button').forEach((b) => b.addEventListener('click', () => gotoTab(b.dataset.tab as TabId)));
+$('#clear-data').addEventListener('click', () => {
+  if (!confirm('ลบข้อมูลที่บันทึกไว้ในเครื่องนี้ทั้งหมด และเริ่มใหม่?')) return;
+  clearSaved();
+  const d = defaultState();
+  Object.assign(state, { ...d, view: state.view, tab: 'home' as TabId });
+  refresh({ tab: true });
+  clearTimeout(saveTimer);
+  clearSaved();
+  $('#save-text').textContent = 'ล้างข้อมูลแล้ว';
+  toast('ลบข้อมูลที่บันทึกในเครื่องนี้แล้ว');
+});
 $('#share').addEventListener('click', share);
 
 /* time / month controls in the 3D viewport */
@@ -372,47 +475,30 @@ const hourInput = $<HTMLInputElement>('#hour');
 hourInput.addEventListener('input', () => {
   state.view.hour = Number(hourInput.value);
   updateScene();
-  if (state.tab === 'results') renderTab();
+});
+hourInput.addEventListener('change', () => {
+  if (state.tab === 'daynight') renderTab();
 });
 $('#months').addEventListener('click', (ev) => {
   const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-month]');
   if (!b) return;
   state.view.month = Number(b.dataset.month);
-  state.view.weather = MONTH_WEATHER[state.view.month]!;
   renderMonths();
   updateScene();
-  if (state.tab === 'results' || state.tab === 'home') renderTab();
-  toast(`${MONTH_NAMES_TH[state.view.month]} • อากาศโดยทั่วไป: ${WEATHER[state.view.weather].icon} ${WEATHER[state.view.weather].label}`);
+  if (state.tab === 'daynight' || state.tab === 'home') renderTab();
 });
-
-const chips = $('#weather-chips');
-chips.innerHTML = WEATHER_IDS.map(
-  (id) =>
-    `<button type="button" class="wx" role="radio" data-wx="${id}" aria-checked="false" aria-label="${WEATHER[id].label}"><span class="em">${WEATHER[id].icon}</span><span class="lb">${WEATHER[id].label.replace('พายุฝนฟ้าคะนอง', 'พายุ').replace('มีเมฆบางส่วน', 'เมฆบางส่วน')}</span></button>`,
-).join('');
-chips.addEventListener('click', (ev) => {
-  const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-wx]');
-  if (!b) return;
-  state.view.weather = b.dataset.wx as WeatherId;
-  updateScene();
-  const w = WEATHER[state.view.weather];
-  toast(`${w.icon} ${w.label} — กำลังผลิตขณะนี้ ×${num(w.pv, 2)} ของวันเฉลี่ย (ผลรายปีไม่เปลี่ยน)`);
-});
-
-const provSel = $<HTMLSelectElement>('#prov-select');
-provSel.innerHTML = PROVINCES.map((p) => `<option value="${p.name}">${p.name}</option>`).join('');
-provSel.value = state.scenario.province;
-provSel.addEventListener('change', () => {
-  state.scenario.province = provSel.value;
-  refresh({ tab: state.tab === 'home' ? true : undefined });
-});
+document.querySelectorAll<HTMLButtonElement>('.quick-times button').forEach((b) =>
+  b.addEventListener('click', () => {
+    state.view.hour = Number(b.dataset.hour);
+    updateScene();
+  }),
+);
 
 const autoBtn = $<HTMLButtonElement>('#auto-btn');
 autoBtn.addEventListener('click', () => {
   state.view.autoRotate = !state.view.autoRotate;
   scene?.setAutoRotate(state.view.autoRotate);
   autoBtn.setAttribute('aria-pressed', String(state.view.autoRotate));
-  $('#auto-label').textContent = state.view.autoRotate ? 'หยุดหมุน' : 'หมุนอัตโนมัติ';
 });
 $('#zoom-in').addEventListener('click', () => scene?.zoom(0.85));
 $('#zoom-out').addEventListener('click', () => scene?.zoom(1.18));
@@ -437,7 +523,7 @@ playBtn.addEventListener('click', () => {
   if (state.view.playing) {
     if (state.view.hour < 5.5 || state.view.hour >= 19) state.view.hour = 5.5;
     requestAnimationFrame(playLoop);
-  } else if (state.tab === 'results') renderTab();
+  } else if (state.tab === 'daynight') renderTab();
 });
 
 /* ------------------------------------------------------------ offer editor */
@@ -468,6 +554,7 @@ function openEditor(existing: Offer | null): void {
       state.offers.push(offer);
     }
     state.selected = offer.id;
+    state.meta.pickedOffer = true;
     dialog.close();
     refresh({ tab: true });
   });
@@ -537,6 +624,7 @@ function toast(msg: string): void {
 
 /* ------------------------------------------------------------ boot */
 // สร้างฉาก 3D ก่อน เพื่อให้ compute shader ใช้ GPUDevice เดียวกับ renderer
+if (loaded.savedAt) setSaveStatus(loaded.savedAt);
 compute();
 renderTab();
 renderSummaryBar();
@@ -544,9 +632,9 @@ SolarScene.create($('#viewport'))
   .then((s) => {
     scene = s;
     if (s.gpuDevice) useSharedDevice(s.gpuDevice);
-    const inset = () => s.setRightInset(window.innerWidth > 900 ? $('#studio').getBoundingClientRect().width + 24 : 0);
-    inset();
-    window.addEventListener('resize', inset);
+    const shift = () => s.setCenterShift(window.innerWidth > 900 ? $('.live-card').getBoundingClientRect().width / 2 + 10 : 0);
+    shift();
+    window.addEventListener('resize', shift);
     $('#renderer').textContent = s.backendName === 'WebGPU' ? 'WebGPU + WGSL' : 'WebGL2';
     $('#renderer-pill').classList.toggle('fallback', s.backendName !== 'WebGPU');
     $('#renderer-pill').title = s.backendName === 'WebGPU' ? 'เรนเดอร์ด้วย WebGPU, shader แผงโซลาร์และการคำนวณขนาดเขียนด้วย WGSL' : 'เบราว์เซอร์นี้ไม่รองรับ WebGPU จึงใช้ WebGL2 แทน (ผลคำนวณเหมือนกัน)';

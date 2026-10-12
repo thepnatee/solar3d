@@ -1,3 +1,4 @@
+import { monthlyHistory } from './simulate';
 import type { Assumptions, Scenario } from './types';
 
 export interface ValidationIssue {
@@ -23,6 +24,8 @@ export function validateInputs(s: Scenario, a: Assumptions): ValidationIssue[] {
 
   if (s.phase === 0) warn('phase', 'ยังไม่ทราบจำนวนเฟส — ระบบจะไม่จัดอันดับแพ็กเกจจนกว่าจะยืนยัน');
   if (s.roofAreaM2 == null) warn('roofAreaM2', 'ยังไม่ทราบพื้นที่หลังคา — ผลลัพธ์ความมั่นใจต่ำ');
+  const kwh = monthlyHistory(s)?.average ?? (s.billedKwh || null);
+  if (kwh != null && kwh < 150) warn('tariff', 'ใช้ไฟไม่ถึง 150 หน่วย/เดือน — บิลอาจเป็นประเภท 1.1 ซึ่งอัตราต่างจากที่แอปใช้ (1.2) ตรวจช่อง "ประเภท" ในบิล');
   if (s.billedKwh != null && s.billedKwh > 0 && s.billMonthlyThb > 0) {
     // ตรวจความสอดคล้องเบื้องต้นระหว่างยอดเงินกับหน่วย (ค่าไฟเฉลี่ยบ้านไทย ~3–5.5 บาท/หน่วย)
     const avg = s.billMonthlyThb / s.billedKwh;
@@ -32,7 +35,11 @@ export function validateInputs(s: Scenario, a: Assumptions): ValidationIssue[] {
 }
 
 export function confidenceLabel(s: Scenario): { level: number; label: string } {
-  if (s.roofSurveyed && s.billedKwh) return { level: 3, label: 'ตรวจหลังคาแล้ว + มีบิลจริง' };
+  const hist = monthlyHistory(s);
+  const hasBill = !!hist || !!s.billedKwh;
+  if (s.roofSurveyed && hist) return { level: 4, label: 'ตรวจหลังคาแล้ว + บิลย้อนหลัง' };
+  if (s.roofSurveyed && hasBill) return { level: 3, label: 'ตรวจหลังคาแล้ว + มีบิลจริง' };
+  if (hist) return { level: 3, label: `มีบิลย้อนหลัง ${hist.months} เดือน` };
   if (s.roofSurveyed) return { level: 2, label: 'ตรวจหลังคาแล้ว' };
   if (s.billedKwh) return { level: 2, label: 'มีหน่วยจากบิลจริง' };
   return { level: 1, label: 'ประมาณการเบื้องต้น' };

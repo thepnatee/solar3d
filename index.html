@@ -3,92 +3,89 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#d6eafa" />
+    <meta name="theme-color" content="#ffffff" />
     <title>Solar Advisor 3D</title>
-    <meta name="description" content="จำลองบ้านติดโซลาร์เซลล์ 3 มิติบนเกาะจำลอง คำนวณค่าไฟ ความคุ้มค่า ระยะคืนทุน และเปรียบเทียบผู้ติดตั้งโซลาร์รูฟท็อปในไทย" />
+    <meta name="description" content="คำนวณค่าไฟและความคุ้มค่าการติดโซลาร์เซลล์ แยกกลางวัน/กลางคืน พร้อมคำแนะนำว่าต้องกรอกอะไร หาจากบิลตรงไหน และเปรียบเทียบผู้ติดตั้งในไทย" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='14' fill='%23f5a524'/%3E%3Cg stroke='%23f5a524' stroke-width='5' stroke-linecap='round'%3E%3Cpath d='M32 4v8M32 52v8M4 32h8M52 32h8M12 12l6 6M46 46l6 6M12 52l6-6M46 18l6-6'/%3E%3C/g%3E%3C/svg%3E" />
   </head>
   <body>
-    <div class="app" id="app">
-      <section class="stage" id="viewport" aria-label="ภาพ 3 มิติ">
-        <div class="grain" aria-hidden="true"></div>
+    <header class="appbar">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">☀️</span>
+        <span class="brand-text">Solar Advisor 3D<small>คำนวณค่าไฟ & แนะนำการติดโซลาร์</small></span>
+      </div>
+      <div class="appbar-actions">
+        <span class="save-pill" id="save-pill" title="ข้อมูลบันทึกในเบราว์เซอร์เครื่องนี้เท่านั้น">💾 <span id="save-text">ยังไม่ได้บันทึก</span></span>
+        <button type="button" class="btn sm ghost" id="clear-data" title="ลบข้อมูลที่บันทึกในเครื่องนี้">ล้างข้อมูล</button>
+        <button type="button" class="btn sm ghost" id="share">แชร์</button>
+        <span class="renderer-pill" id="renderer-pill"><i class="status-dot"></i><span id="renderer">3D…</span></span>
+      </div>
+    </header>
 
-        <header class="topbar">
-          <div class="brand">
-            <span class="brand-icon" aria-hidden="true">☀️</span>
-            <span class="brand-text">Solar Advisor 3D<small>บ้านโซลาร์ของคุณ</small></span>
-          </div>
-          <div class="nav-right">
-            <span class="status-pill" id="renderer-pill"><i class="status-dot"></i><span id="renderer">กำลังโหลด 3D…</span></span>
-            <label class="nav-button" title="จังหวัด">
-              <svg viewBox="0 0 24 24"><path d="M20 10c0 5.5-8 11-8 11S4 15.5 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></svg>
-              <select id="prov-select" aria-label="จังหวัด"></select>
-            </label>
-            <button type="button" class="nav-button" id="auto-btn"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 6M20 4v7h-7" /></svg><span id="auto-label">หมุนอัตโนมัติ</span></button>
-            <button type="button" class="nav-button" id="share"><svg viewBox="0 0 24 24"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v13" /></svg><span>แชร์</span></button>
-          </div>
-        </header>
-
-        <section class="live" aria-live="polite">
-          <p class="eyebrow">ภาพสดจากหลังคาของคุณ</p>
-          <div class="location" id="hero-loc">นนทบุรี</div>
-          <div class="big"><span id="hero-kw">0.00</span><sup>kW</sup></div>
-          <div class="condition" id="hero-cond">–</div>
-          <p class="desc" id="hero-desc"></p>
-          <div class="stats">
-            <div class="stat"><b id="flow-load">–</b><span>บ้านใช้ไฟ</span></div>
-            <div class="stat"><b id="flow-self">–</b><span>ใช้จากแผง</span></div>
-            <div class="stat" id="flow-grid-row"><b id="flow-grid">–</b><span id="flow-grid-label">ซื้อจากการไฟฟ้า</span></div>
-          </div>
-          <div class="weather-chips" id="weather-chips" role="radiogroup" aria-label="สภาพอากาศ"></div>
-          <div class="tiny-tag" id="hero-pkg"></div>
-        </section>
-
-        <div class="side-tools">
-          <button type="button" class="round-button" id="zoom-in" aria-label="ซูมเข้า"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></button>
-          <button type="button" class="round-button" id="zoom-out" aria-label="ซูมออก"><svg viewBox="0 0 24 24"><path d="M5 12h14" /></svg></button>
-          <button type="button" class="round-button" id="reset-view" aria-label="รีเซ็ตมุมกล้อง"><svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7v9h-6v-6H9v6H3z" /></svg></button>
-        </div>
-        <div class="corner-hint"><span class="hint-symbol">↔</span> ลากเพื่อหมุน · เลื่อนเพื่อซูม</div>
-
-        <div class="dock">
-          <div class="dock-time">
-            <button type="button" id="play" class="play" aria-label="เล่นทั้งวัน">▶</button>
-            <div class="time">
-              <small>เวลา</small>
-              <b id="hud-time">12:00</b>
-              <input type="range" id="hour" min="0" max="23.75" step="0.25" aria-label="เวลาของวัน" />
-            </div>
-          </div>
-          <div class="months" id="months" role="tablist" aria-label="เลือกเดือน"></div>
-        </div>
-
-        <div class="loading">กำลังสร้างเกาะ 3 มิติ…</div>
-        <div class="fallback">เบราว์เซอร์นี้แสดง 3D ไม่ได้ — การคำนวณทั้งหมดยังใช้งานได้ตามปกติ</div>
-      </section>
-
+    <main class="shell">
       <aside class="studio" id="studio">
-        <div class="studio-head">
-          <div><strong>สตูดิโอโซลาร์</strong><p>ปรับบ้าน ค่าไฟ แล้วดูความคุ้มค่าทันที</p></div>
-          <span class="spark" aria-hidden="true">✨</span>
-        </div>
         <div class="summary" aria-live="polite">
           <div><span>ค่าไฟ/เดือน</span><b id="sum-bill">–</b></div>
           <div><span>ประหยัดสุทธิ</span><b id="sum-save">–</b></div>
           <div><span>ลงทุน</span><b id="sum-capex">–</b></div>
           <div><span>คืนทุน</span><b id="sum-payback">–</b></div>
         </div>
-        <nav class="tabs" role="tablist">
-          <button type="button" role="tab" data-tab="home">บ้าน & ค่าไฟ</button>
-          <button type="button" role="tab" data-tab="results">ผลคำนวณ</button>
+        <nav class="tabs" role="tablist" aria-label="ส่วนของแอป">
+          <button type="button" role="tab" data-tab="home">① กรอกข้อมูล</button>
+          <button type="button" role="tab" data-tab="results">② ผล & คำแนะนำ</button>
+          <button type="button" role="tab" data-tab="daynight">③ กลางวัน/คืน</button>
           <button type="button" role="tab" data-tab="installers">ผู้ติดตั้ง</button>
           <button type="button" role="tab" data-tab="size">ขนาดที่เหมาะ</button>
           <button type="button" role="tab" data-tab="learn">เรียนรู้</button>
         </nav>
         <div class="panel-body" id="panel-body" role="tabpanel"></div>
-        <footer class="disclaimer">ประมาณการเพื่อการศึกษา ไม่ใช่การรับประกันเงินประหยัด • ไม่เก็บข้อมูลใด ๆ ของคุณ • อัตราค่าไฟ 1.2 ก.ย.–ธ.ค. 2569</footer>
+        <footer class="disclaimer">ประมาณการเพื่อการศึกษา ไม่ใช่การรับประกันเงินประหยัด • อัตราค่าไฟประเภท 1.2 ก.ย.–ธ.ค. 2569 • ข้อมูลบันทึกเฉพาะในเครื่องนี้</footer>
       </aside>
-    </div>
+
+      <section class="stage" id="stage" aria-label="ภาพ 3 มิติ บ้านติดโซลาร์">
+        <div class="canvas-wrap" id="viewport">
+          <div class="loading">กำลังสร้างภาพ 3 มิติ…</div>
+          <div class="fallback">เบราว์เซอร์นี้แสดง 3D ไม่ได้ — การคำนวณทั้งหมดยังใช้งานได้ตามปกติ</div>
+          <div class="side-tools">
+            <button type="button" class="round-button" id="zoom-in" aria-label="ซูมเข้า"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg></button>
+            <button type="button" class="round-button" id="zoom-out" aria-label="ซูมออก"><svg viewBox="0 0 24 24"><path d="M5 12h14" /></svg></button>
+            <button type="button" class="round-button" id="reset-view" aria-label="รีเซ็ตมุมกล้อง"><svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7v9h-6v-6H9v6H3z" /></svg></button>
+            <button type="button" class="round-button" id="auto-btn" aria-label="หมุนอัตโนมัติ" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2 6M20 4v7h-7" /></svg></button>
+          </div>
+        </div>
+
+        <div class="live-card" aria-live="polite">
+          <div class="live-head"><span id="live-when">12:00 น. • เมษายน</span><span class="badge" id="live-period">☀️ กลางวัน</span></div>
+          <div class="live-main">
+            <div><small>โซลาร์ผลิตตอนนี้</small><b id="live-pv">0.00</b><span class="unit">kW</span></div>
+            <div><small>บ้านใช้ไฟ</small><b id="live-load">0.00</b><span class="unit">kW</span></div>
+          </div>
+          <div class="live-split">
+            <div class="row between"><span>⚡ ใช้จากแผง</span><b id="live-self">–</b></div>
+            <div class="row between" id="live-grid-row"><span id="live-grid-label">🔌 ซื้อจากการไฟฟ้า</span><b id="live-grid">–</b></div>
+          </div>
+          <p class="live-note" id="live-note"></p>
+          <div class="quick-times" role="group" aria-label="ข้ามไปช่วงเวลา">
+            <button type="button" data-hour="9">🌤️ 09:00</button>
+            <button type="button" data-hour="12">☀️ 12:00</button>
+            <button type="button" data-hour="17">🌇 17:00</button>
+            <button type="button" data-hour="21">🌙 21:00</button>
+          </div>
+          <div class="pkg" id="live-pkg"></div>
+        </div>
+
+        <div class="dock">
+          <div class="dock-time">
+            <button type="button" id="play" class="play" aria-label="เล่นทั้งวัน">▶</button>
+            <div class="time">
+              <b id="hud-time">12:00</b>
+              <input type="range" id="hour" min="0" max="23.75" step="0.25" aria-label="เวลาของวัน" />
+            </div>
+          </div>
+          <div class="months" id="months" role="tablist" aria-label="เลือกเดือน (ตัวเลข = kWh ที่แผงผลิตในเดือนนั้น)"></div>
+        </div>
+      </section>
+    </main>
     <dialog id="offer-dialog" aria-label="แก้ไขใบเสนอราคา"></dialog>
     <div id="toast" role="status"></div>
     <script type="module" src="/src/main.ts"></script>

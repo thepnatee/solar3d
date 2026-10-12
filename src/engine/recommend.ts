@@ -270,7 +270,7 @@ function buildInsights(ctx: SimulationContext, ranked: OfferEvaluation[], pm: Pr
 function buildChecklist(ctx: SimulationContext, evals: OfferEvaluation[]): string[] {
   const list: string[] = [];
   const s = ctx.scenario;
-  if (s.billedKwh == null) list.push('อ่านจำนวนหน่วย (kWh) จากบิลจริง 12 เดือน แทนการคำนวณย้อนจากยอดเงิน');
+  if (s.billedKwh == null && !(s.monthlyKwh ?? []).some((v) => v)) list.push('อ่านจำนวนหน่วย (kWh) จากบิลจริง 12 เดือน แทนการคำนวณย้อนจากยอดเงิน');
   if (s.phase === 0) list.push('ตรวจมิเตอร์ว่าเป็นไฟ 1 เฟส หรือ 3 เฟส');
   if (!s.roofSurveyed) list.push('ให้ช่าง/วิศวกรสำรวจหลังคา ทิศ เงา และความแข็งแรงโครงสร้าง');
   if (evals.some((e) => e.offer.vatMode === 'UNKNOWN')) list.push('ถามผู้ขายว่าราคารวม VAT แล้วหรือยัง');
