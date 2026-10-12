@@ -197,6 +197,8 @@ small {
   border-right: 1px solid var(--border);
 }
 .panel-body {
+  /* containing block ให้ลูกที่เป็น absolute ไม่หลุดออกไปยืดความสูงทั้งหน้า */
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 12px 14px 20px;
@@ -1145,6 +1147,7 @@ label.check {
 .seg label {
   flex: 1;
   cursor: pointer;
+  position: relative;
 }
 .seg input {
   position: absolute;
@@ -1674,11 +1677,14 @@ dialog::backdrop {
   }
 }
 
-/* จอใหญ่: หน้าเว็บต้องไม่เลื่อนเลย (เลื่อนเฉพาะแผงซ้าย) — clip กันการเลื่อนด้วยโค้ดด้วย */
+/* จอใหญ่: หน้าเว็บต้องไม่เลื่อนเลย (เลื่อนเฉพาะแผงซ้าย) */
 @media (min-width: 901px) {
   html,
   body {
     height: 100%;
-    overflow: clip;
+    overflow: hidden;
+  }
+  .shell {
+    overflow: hidden;
   }
 }

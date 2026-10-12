@@ -452,6 +452,11 @@ function scrollPanelTo(el: HTMLElement): void {
   }
 }
 
+// กันชั้นสุดท้าย: จอใหญ่ หน้าเว็บอยู่กับที่เสมอ (เช่น เบราว์เซอร์เลื่อนหาช่องที่ focus หรือ Find in page)
+window.addEventListener('scroll', () => {
+  if (window.innerWidth > 900 && (window.scrollY || window.scrollX)) window.scrollTo(0, 0);
+});
+
 function showStageOnMobile(): void {
   if (window.innerWidth <= 900) $('#stage').scrollIntoView({ behavior: 'smooth' });
 }
