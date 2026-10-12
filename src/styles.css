@@ -1673,3 +1673,12 @@ dialog::backdrop {
     padding: 6px 4px;
   }
 }
+
+/* จอใหญ่: หน้าเว็บต้องไม่เลื่อนเลย (เลื่อนเฉพาะแผงซ้าย) — clip กันการเลื่อนด้วยโค้ดด้วย */
+@media (min-width: 901px) {
+  html,
+  body {
+    height: 100%;
+    overflow: clip;
+  }
+}

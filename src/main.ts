@@ -67,7 +67,7 @@ function customOffer(kwp: number): Offer {
     ...base,
     id: `CUSTOM:${kwp}`,
     installerId: '__market',
-    packageName: `ขนาด ${kwp} kWp (ราคาตลาดประมาณ)`,
+    packageName: `ขนาด ${kwp} kWp`,
     solarDcKwp: kwp,
     inverterAcKw: Math.round(kwp),
     panelCount: Math.ceil((kwp * 1000) / 590),
@@ -433,10 +433,23 @@ function jumpTo(id: string): void {
   const el = document.getElementById(id);
   if (!el) return;
   if (el instanceof HTMLDetailsElement) el.open = true;
-  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  scrollPanelTo(el);
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 1600);
   el.querySelector<HTMLElement>('input:not([type=hidden]),select')?.focus({ preventScroll: true });
+}
+
+/**
+ * จอใหญ่: เลื่อนเฉพาะแผงด้านซ้าย (scrollIntoView จะเลื่อนทั้งหน้าจนหัวเว็บหลุดและเกิดที่ว่างด้านล่าง)
+ * มือถือ: หน้าเว็บเลื่อนทั้งหน้าอยู่แล้ว
+ */
+function scrollPanelTo(el: HTMLElement): void {
+  if (window.innerWidth > 900) {
+    const top = el.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop - 8;
+    panel.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  } else {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function showStageOnMobile(): void {
