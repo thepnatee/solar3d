@@ -1,0 +1,24 @@
+{
+  "name": "solar3d",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Solar Advisor 3D — จำลองบ้านติดโซลาร์เซลล์ 3 มิติ (WebGPU + WGSL + Three.js) พร้อมคำนวณค่าไฟ ความคุ้มค่า และแนะนำผู้ติดตั้ง",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4"
+  }
+}

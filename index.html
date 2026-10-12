@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solar Advisor 3D</title>
+    <meta name="description" content="จำลองบ้านติดโซลาร์เซลล์ 3 มิติ คำนวณค่าไฟ ความคุ้มค่า ระยะคืนทุน และเปรียบเทียบผู้ติดตั้งโซลาร์รูฟท็อปในไทย" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='14' fill='%23f5a524'/%3E%3Cg stroke='%23f5a524' stroke-width='5' stroke-linecap='round'%3E%3Cpath d='M32 4v8M32 52v8M4 32h8M52 32h8M12 12l6 6M46 46l6 6M12 52l6-6M46 18l6-6'/%3E%3C/g%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><circle cx="16" cy="12" r="6" fill="var(--c-pv)" /><path d="M3 28 L9 18 H23 L29 28 Z" fill="var(--accent)" /><path d="M11 18 L8 28 M16 18 V28 M21 18 L24 28 M6 23 H26" stroke="#fff" stroke-width="1.2" /></svg>
+        <div>
+          <h1>Solar Advisor 3D</h1>
+          <p>จำลองบ้าน • คำนวณค่าไฟ • แนะนำผู้ติดตั้ง</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="renderer" class="badge">กำลังโหลด 3D…</span>
+        <button type="button" id="share" class="btn sm ghost">แชร์</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="viewport" id="viewport" aria-label="ภาพ 3 มิติ">
+        <div class="hud hud-tl">
+          <div class="flow-row"><i class="dot pv"></i>โซลาร์ผลิต <b id="flow-pv">–</b></div>
+          <div class="flow-row"><i class="dot load"></i>บ้านใช้ไฟ <b id="flow-load">–</b></div>
+          <div class="flow-row"><i class="dot self"></i>ใช้ไฟจากแผง <b id="flow-self">–</b></div>
+          <div class="flow-row" id="flow-grid-row"><i class="dot grid"></i>การไฟฟ้า <b id="flow-grid">–</b></div>
+          <small class="muted">ลูกศรแดงบนพื้น = ทิศเหนือ</small>
+        </div>
+        <div class="hud hud-tr" id="hud-offer"></div>
+        <div class="hud hud-bottom">
+          <button type="button" id="play" class="btn sm round" aria-label="เล่นทั้งวัน">▶</button>
+          <div class="time">
+            <span id="hud-time">12:00</span>
+            <input type="range" id="hour" min="0" max="23.75" step="0.25" aria-label="เวลาของวัน" />
+          </div>
+          <select id="month" aria-label="เดือน"></select>
+        </div>
+        <div class="loading">กำลังเตรียมภาพ 3 มิติ…</div>
+        <div class="fallback">เบราว์เซอร์นี้แสดง 3D ไม่ได้ — การคำนวณทั้งหมดยังใช้งานได้ตามปกติ</div>
+      </section>
+
+      <aside class="side">
+        <div class="summary" aria-live="polite">
+          <div><span>ค่าไฟ/เดือน</span><b id="sum-bill">–</b></div>
+          <div><span>ประหยัดสุทธิ</span><b id="sum-save">–</b></div>
+          <div><span>ลงทุน</span><b id="sum-capex">–</b></div>
+          <div><span>คืนทุน</span><b id="sum-payback">–</b></div>
+        </div>
+        <nav class="tabs" role="tablist">
+          <button type="button" role="tab" data-tab="home">บ้าน & ค่าไฟ</button>
+          <button type="button" role="tab" data-tab="results">ผลคำนวณ</button>
+          <button type="button" role="tab" data-tab="installers">ผู้ติดตั้ง</button>
+          <button type="button" role="tab" data-tab="size">ขนาดที่เหมาะ</button>
+          <button type="button" role="tab" data-tab="learn">เรียนรู้</button>
+        </nav>
+        <div class="panel-body" id="panel-body" role="tabpanel"></div>
+        <footer class="disclaimer">ประมาณการเพื่อการศึกษา ไม่ใช่การรับประกันเงินประหยัดหรือแบบทางวิศวกรรม • อัตราค่าไฟ 1.2 ก.ย.–ธ.ค. 2569</footer>
+      </aside>
+    </main>
+    <dialog id="offer-dialog" aria-label="แก้ไขใบเสนอราคา"></dialog>
+    <div id="toast" role="status"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
