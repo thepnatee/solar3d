@@ -29,6 +29,12 @@
 
 มี `vercel.json` ตั้งค่าไว้แล้ว (Vite → `dist/`, cache ไฟล์ assets 1 ปี) — ไม่ต้องตั้ง environment variable ใด ๆ เพราะแอปไม่มี backend/ฐานข้อมูล
 
+**ตรวจการตั้งค่า (ถ้า push แล้วเว็บไม่เปลี่ยน)**
+- Settings → Git → Connected Git Repository = `thepnatee/solar3d`
+- Settings → Environments → Production → Branch Tracking = `main`
+- Settings → Git → Deploy Hooks: สร้าง hook ของ branch `main` ไว้สั่ง deploy เองได้ด้วย `curl -X POST <hook-url>` (เก็บ URL เป็นความลับ อย่า commit ลง repo)
+- Vercel deploy เฉพาะ commit ที่ push **หลัง** ผูก repo — commit ก่อนหน้านั้นต้องกด Redeploy หรือยิง hook
+
 **ทางที่ 1 — ผ่านหน้าเว็บ (แนะนำ, deploy อัตโนมัติทุกครั้งที่ push)**
 1. เข้า https://vercel.com/new → Import Git Repository → เลือก `thepnatee/solar3d`
 2. Framework Preset จะขึ้น **Vite** เอง → กด **Deploy**
